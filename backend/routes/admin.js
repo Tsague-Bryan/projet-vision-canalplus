@@ -468,4 +468,121 @@ router.delete("/decodeurs/:id", async (req, res) => {
   }
 });
 
+// ── ACTIVER / DÉSACTIVER LE BOUTON BALANCE (admin manuel) ────────────────────
+// POST /api/admin/balance-toggle
+// Body : { enabled: true | false }
+router.post("/admin/balance-toggle", auth, async (req, res) => {
+  try {
+    // Vérifier que c'est bien l'admin
+    if (req.user.role !== "admin") {
+      return res.status(403).json({ error: "Accès refusé" });
+    }
+
+    const { enabled } = req.body;
+
+    if (typeof enabled !== "boolean") {
+      return res.status(400).json({ error: "Le champ 'enabled' doit être true ou false" });
+    }
+
+    await pool.query(
+      "UPDATE commission_settings SET balance_enabled = ?, enabled_by = 'admin' WHERE id = 1",
+      [enabled ? 1 : 0]
+    );
+
+    return res.json({
+      success: true,
+      message: enabled
+        ? "✅ Bouton Balance activé pour tous les partenaires."
+        : "🔒 Bouton Balance désactivé.",
+      balance_enabled: enabled,
+    });
+
+  } catch (err) {
+    console.error("🔥 ERREUR balance-toggle :", err);
+    return res.status(500).json({ error: "Erreur serveur" });
+  }
+});
+
+// ── STATUT ACTUEL DU BOUTON BALANCE ──────────────────────────────────────────
+// GET /api/admin/balance-status
+router.get("/admin/balance-status", auth, async (req, res) => {
+  try {
+    if (req.user.role !== "admin") {
+      return res.status(403).json({ error: "Accès refusé" });
+    }
+
+    const [rows] = await pool.query(
+      "SELECT balance_enabled, enabled_by, updated_at FROM commission_settings WHERE id = 1"
+    );
+
+    if (rows.length === 0) {
+      return res.status(500).json({ error: "Paramètres introuvables" });
+    }
+
+    return res.json(rows[0]);
+
+  } catch (err) {
+    console.error("🔥 ERREUR admin balance-status :", err);
+    return res.status(500).json({ error: "Erreur serveur" });
+  }
+});
+
+// ── LISTE DES RETRAITS DE COMMISSIONS (pour admin) ───────────────────────────
+// GET /api/admin/retraits
+router.get("/admin/retraits", auth, async (req, res) => {
+  try {
+    if (req.user.role !== "admin") {
+      return res.status(403).json({ error: "Accès refusé" });
+    }
+
+    const [rows] = await pool.query(
+      `SELECT dr.id, dr.montant, dr.statut, dr.created_at,
+              u.name, u.prenom, u.structure, u.telephone
+       FROM demandes_retrait dr
+       JOIN users u ON u.id = dr.user_id
+       ORDER BY dr.created_at DESC`
+    );
+
+    return res.json(rows);
+
+  } catch (err) {
+    console.error("🔥 ERREUR admin/retraits :", err);
+    return res.status(500).json({ error: "Erreur serveur" });
+  }
+});
+
+// ── TOTAL DES COMMISSIONS PAR PARTENAIRE (pour dashboard admin) ───────────────
+// GET /api/admin/commissions-summary
+router.get("/admin/commissions-summary", auth, async (req, res) => {
+  try {
+    if (req.user.role !== "admin") {
+      return res.status(403).json({ error: "Accès refusé" });
+    }
+
+    const [rows] = await pool.query(
+      `SELECT u.id, u.name, u.prenom, u.structure,
+              u.commission_balance AS commissions_en_attente,
+              u.commission_total   AS commissions_totales,
+              u.wallet_balance
+       FROM users u
+       WHERE u.role = 'partner' AND u.status = 'approved'
+       ORDER BY u.commission_total DESC`
+    );
+
+    // Total global des commissions générées
+    const [totaux] = await pool.query(
+      "SELECT COALESCE(SUM(commission), 0) AS total FROM reabonnements"
+    );
+
+    return res.json({
+      partenaires:       rows,
+      total_commissions: totaux[0].total,
+    });
+
+  } catch (err) {
+    console.error("🔥 ERREUR commissions-summary :", err);
+    return res.status(500).json({ error: "Erreur serveur" });
+  }
+});
+
 module.exports = router;

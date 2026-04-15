@@ -2,6 +2,10 @@ import React, { useEffect, useState, useCallback } from "react";
 import { useMemo } from "react";
 import { useNavigate } from "react-router-dom";
 import logo from "../assets/logo.png";
+import cfgImg from "../assets/cfg.jpg";
+import abonnementsImg from "../assets/abonnements.png";
+import accessoiresImg from "../assets/Dcodeur.png";
+import technicienImg from "../assets/inst.jpg";
 import { BarChart, Bar, XAxis, YAxis, Tooltip, ResponsiveContainer } from "recharts";
 import { generateInvoicePDF, printInvoicePDF, findLocalInvoice, buildInvoiceFromApiTransaction } from "./invoiceUtils";
 
@@ -269,9 +273,9 @@ body.append("capture", capture);
 
 const MOYENS_RETRAIT = ["MTN Mobile Money", "Orange Money", "Express Union"];
 
-const ModalRetirer = ({ commissions, onClose, onSuccess }) => {
+const ModalRetirer = ({ wallet, onClose, onSuccess }) => {
   const [montant, setMontant] = useState("");
-  const [moyen,   setMoyen]   = useState("");
+  const [date,    setDate]    = useState("");
   const [numero,  setNumero]  = useState("");
   const [errors,  setErrors]  = useState({});
   const [loading, setLoading] = useState(false);
@@ -281,9 +285,9 @@ const ModalRetirer = ({ commissions, onClose, onSuccess }) => {
     const e = {};
     const m = Number(montant);
     if (!montant || isNaN(m) || m <= 0) e.montant = "Montant invalide";
-    else if (m > commissions)                e.montant = `Solde insuffisant (max ${fmt(commissions)} FCFA)`;
-    if (!moyen)                         e.moyen   = "Sélectionnez un moyen de retrait";
-    if (!numero.trim())                 e.numero  = "Champ obligatoire";
+    else if (m > wallet)                e.montant = `Solde insuffisant (max ${fmt(wallet)} FCFA)`;
+    if (!date)                         e.date    = "Sélectionnez la date de retrait";
+    if (!numero.trim())                e.numero  = "Champ obligatoire";
     return e;
   };
 
@@ -296,7 +300,7 @@ const ModalRetirer = ({ commissions, onClose, onSuccess }) => {
       const res   = await fetch("http://localhost:5000/api/partner/withdraw", {
         method: "POST",
         headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
-        body: JSON.stringify({ montant: Number(montant)}),
+        body: JSON.stringify({ montant: Number(montant), date }),
       });
       if (!res.ok) throw new Error();
       setSuccess(true);
@@ -321,7 +325,7 @@ const ModalRetirer = ({ commissions, onClose, onSuccess }) => {
       <ModalHeader
         icon={{ bg: "#fff7ed", el: <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="#ea580c" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><rect x="2" y="7" width="20" height="15" rx="2"/><path d="M16 7V5a2 2 0 0 0-2-2h-4a2 2 0 0 0-2 2v2"/><path d="M12 18v-6M9 15l3 3 3-3"/></svg> }}
         title="Retirer mes commissions"
-        subtitle={<>Solde disponible : <span className="text-green-600 font-semibold">{fmt(commissions)} FCFA</span></>}
+        subtitle={<>Solde disponible : <span className="text-green-600 font-semibold">{fmt(wallet)} FCFA</span></>}
         onClose={onClose}
       />
 
@@ -331,17 +335,14 @@ const ModalRetirer = ({ commissions, onClose, onSuccess }) => {
         <Field label="Montant à retirer (FCFA)" error={errors.montant}>
           <input type="number" value={montant}
             onChange={(e) => { setMontant(e.target.value); setErrors((p) => ({ ...p, montant: undefined })); }}
-            placeholder={`Max : ${fmt(commissions)} FCFA`} min="1" max={commissions}
+            placeholder={`Max : ${fmt(wallet)} FCFA`} min="1" max={wallet}
             className={inputCls(errors.montant)}/>
         </Field>
 
-        <Field label="Moyen de retrait" error={errors.moyen}>
-          <select value={moyen}
-            onChange={(e) => { setMoyen(e.target.value); setErrors((p) => ({ ...p, moyen: undefined })); }}
-            className={inputCls(errors.moyen) + " cursor-pointer"}>
-            <option value="">-- Sélectionner --</option>
-            {MOYENS_RETRAIT.map((m) => <option key={m} value={m}>{m}</option>)}
-          </select>
+        <Field label="Date de retrait souhaitée" error={errors.date}>
+          <input type="date" value={date}
+            onChange={(e) => { setDate(e.target.value); setErrors((p) => ({ ...p, date: undefined })); }}
+            className={inputCls(errors.date)} />
         </Field>
 
         <Field label="Numéro de réception" error={errors.numero}>
@@ -470,20 +471,19 @@ const navItems = [
   { id: "statistiques", label: "Statistiques", Icon: IconStats        },
   { id: "portefeuille", label: "Portefeuille", Icon: IconWallet       },
   { id: "parametres",   label: "Paramètres",   Icon: IconSettings     },
-    { id: "decodeurs",    label: "Décodeurs",    Icon: IconSettings },
 
 ];
 
 const services = [
-  { id: "abonnement",   label: "Abonnement",   Icon: IconSubscribe,    route: "/abonnements"  },
-  { id: "reabonnement", label: "Réabonnement", Icon: IconRenew,        route: "/reabonnement"},
-  { id: "accessoire",   label: "Accessoire",   Icon: IconAccessory,    route: "/boutique"    },
-  { id: "technicien",   label: "Technicien",   Icon: IconTechnicianSvc, route: null          },
+  { id: "abonnement",   label: "Abonnement",   image: cfgImg,         route: "/abonnements"  },
+  { id: "reabonnement", label: "Réabonnement", image: abonnementsImg, route: "/reabonnement"},
+  { id: "accessoire",   label: "Accessoire",   image: accessoiresImg, route: "/boutique"    },
+  { id: "technicien",   label: "Technicien",   image: technicienImg,  route: null          },
 ];
 
 // ── PAGES ─────────────────────────────────────────────────────────────────────
 
-const PageAccueil = ({ message, wallet, navigate, adminWhatsapp }) => {
+const PageAccueil = ({ message, wallet, commissionTotal, navigate, adminWhatsapp }) => {
   const [showTechnicien, setShowTechnicien] = useState(false);
   return (
     <div className="flex flex-col gap-6">
@@ -491,21 +491,35 @@ const PageAccueil = ({ message, wallet, navigate, adminWhatsapp }) => {
         <p className="text-gray-400 text-xs uppercase tracking-widest mb-1">Bienvenue</p>
         <h1 className="text-white text-xl font-semibold">{message}</h1>
       </div>
-      <div className="bg-green-600 rounded-xl px-5 py-5 flex items-center justify-between shadow-sm">
-        <div>
-          <p className="text-green-100 text-xs uppercase tracking-widest mb-1">Portefeuille</p>
-          <p className="text-white text-2xl font-bold">{fmt(wallet)} FCFA</p>
+      <div className="grid gap-4 md:grid-cols-2">
+        <div className="bg-green-600 rounded-xl px-5 py-5 flex items-center justify-between shadow-sm">
+          <div>
+            <p className="text-green-100 text-xs uppercase tracking-widest mb-1">Portefeuille</p>
+            <p className="text-white text-2xl font-bold">{fmt(wallet)} FCFA</p>
+          </div>
+          <svg width="36" height="36" viewBox="0 0 24 24" fill="none" stroke="rgba(255,255,255,0.6)" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
+            <rect x="2" y="7" width="20" height="15" rx="2"/><path d="M16 7V5a2 2 0 0 0-2-2h-4a2 2 0 0 0-2 2v2"/><circle cx="12" cy="14" r="2"/>
+          </svg>
         </div>
-        <svg width="36" height="36" viewBox="0 0 24 24" fill="none" stroke="rgba(255,255,255,0.6)" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
-          <rect x="2" y="7" width="20" height="15" rx="2"/><path d="M16 7V5a2 2 0 0 0-2-2h-4a2 2 0 0 0-2 2v2"/><circle cx="12" cy="14" r="2"/>
-        </svg>
+
+        <div className="bg-blue-600 rounded-xl px-5 py-5 flex items-center justify-between shadow-sm">
+          <div>
+            <p className="text-blue-100 text-xs uppercase tracking-widest mb-1">Commissions gagnées</p>
+            <p className="text-white text-2xl font-bold">{fmt(commissionTotal)} FCFA</p>
+          </div>
+          <svg width="36" height="36" viewBox="0 0 24 24" fill="none" stroke="rgba(255,255,255,0.6)" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
+            <path d="M4 4h16v16H4z"/><path d="M8 9h8M8 13h8M8 17h8" stroke="white" strokeWidth="1.8" strokeLinecap="round"/>
+          </svg>
+        </div>
       </div>
       <p className="text-center text-base font-semibold text-gray-700">Nos services</p>
       <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">
-        {services.map(({ id, label, Icon, route }) => (
+        {services.map(({ id, label, image, route }) => (
           <button key={id} onClick={() => { if (id === "technicien") { setShowTechnicien(true); return; } route && navigate(route); }}
             className="flex flex-col rounded-xl overflow-hidden border border-gray-200 bg-white active:scale-95 hover:-translate-y-1 transition-transform duration-150 shadow-sm">
-            <div className="flex items-center justify-center bg-[#ece9e2] h-28 w-full"><Icon /></div>
+            <div className="relative overflow-hidden bg-[#ece9e2] h-28 w-full">
+              <img src={image} alt={label} className="absolute inset-0 h-full w-full object-cover object-center" />
+            </div>
             <div className="bg-gray-900 text-white text-sm font-medium py-2.5 text-center w-full">{label}</div>
           </button>
         ))}
@@ -722,9 +736,33 @@ const PageTransactions = ({ transactions = [] }) => {
 
 // ── PAGE PORTEFEUILLE ─────────────────────────────────────────────────────────
 
-const PagePortefeuille = ({ wallet, setWallet, transactions }) => {
+const PagePortefeuille = ({ wallet, setWallet, commissionBalance, setCommissionBalance, commissionTotal, transactions }) => {
   const [showRecharger, setShowRecharger] = useState(false);
   const [showRetirer,   setShowRetirer]   = useState(false);
+  const [isBalancing,   setIsBalancing]   = useState(false);
+  const [balanceMessage, setBalanceMessage] = useState("");
+
+  const handleBalance = async () => {
+    setIsBalancing(true);
+    setBalanceMessage("");
+    try {
+      const token = localStorage.getItem("token");
+      const res = await fetch("http://localhost:5000/api/partner/withdraw", {
+        method: "POST",
+        headers: { Authorization: `Bearer ${token}` },
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || data.message || "Erreur de transfert");
+      setWallet(data.wallet_balance ?? wallet);
+      setCommissionBalance(data.commission_balance ?? 0);
+      setBalanceMessage(data.message || "Commissions transférées avec succès.");
+    } catch (err) {
+      setBalanceMessage(err.message || "Impossible de balancer les commissions.");
+      console.error("Erreur balance :", err);
+    } finally {
+      setIsBalancing(false);
+    }
+  };
 
   return (
     <div className="flex flex-col gap-6">
@@ -734,7 +772,7 @@ const PagePortefeuille = ({ wallet, setWallet, transactions }) => {
       </div>
 
       <div className="bg-green-600 rounded-2xl px-6 py-8 flex flex-col items-center shadow-md">
-        <p className="text-green-100 text-sm uppercase tracking-widest mb-2">Solde disponible</p>
+        <p className="text-green-100 text-sm uppercase tracking-widest mb-2">Solde disponible dans le portefeuille</p>
         <p className="text-white text-4xl font-bold">{fmt(wallet)} FCFA</p>
       </div>
 
@@ -757,8 +795,31 @@ const PagePortefeuille = ({ wallet, setWallet, transactions }) => {
         </button>
       </div>
 
+      <div className="bg-gray-900 rounded-2xl px-6 py-5">
+        <p className="text-gray-300 text-xs uppercase tracking-widest">Mon solde commission</p>
+      </div>
+
+      <div className="bg-green-600 rounded-2xl px-6 py-8 text-center">
+        <p className="text-green-100 text-xs uppercase tracking-widest mb-2">Commissions cumulées</p>
+        <p className="text-white text-4xl font-bold">{fmt(commissionBalance)} FCFA</p>
+      </div>
+
+      <button
+        onClick={handleBalance}
+        disabled={isBalancing}
+        className="w-full bg-gray-900 text-white rounded-2xl py-4 text-sm font-semibold transition-all hover:bg-black active:scale-95 disabled:cursor-not-allowed disabled:opacity-60"
+      >
+        {isBalancing ? "Paiement..." : "Paiement"}
+      </button>
+
+      {balanceMessage && (
+        <div className="px-2">
+          <p className="text-sm text-gray-600">{balanceMessage}</p>
+        </div>
+      )}
+
       <div className="bg-white rounded-2xl border border-gray-100 shadow-sm overflow-hidden">
-        <div className="px-5 pt-4 pb-2">
+        <div className="px-5 pt-5 pb-4">
           <p className="text-xs text-gray-400 uppercase tracking-widest">Dernières opérations</p>
         </div>
         {transactions.length === 0 ? (
@@ -819,12 +880,14 @@ const PageParametres = ({ onLogout }) => (
 
 export default function PartnerDashboard() {
   const [activeNav, setActiveNav]           = useState("accueil");
-  const [message,   setMessage]             = useState("Tableau de bord partenaire");
-  const [wallet,    setWallet]              = useState(0);
-  const [stats,     setStats]               = useState({ clients: 0, reabonnements: 0, revenus: 0 });
-  const [commissionsParFormule, setCommissions] = useState([]);
-  const [transactions, setTransactions]     = useState([]);
-  const [adminWhatsapp, setAdminWhatsapp]   = useState("");
+  const [message,         setMessage]          = useState("Tableau de bord partenaire");
+  const [wallet,            setWallet]             = useState(0);
+  const [commissionBalance, setCommissionBalance]  = useState(0);
+  const [commissionTotal,   setCommissionTotal]    = useState(0);
+  const [stats,             setStats]              = useState({ clients: 0, reabonnements: 0, revenus: 0 });
+  const [commissionsParFormule, setCommissions]   = useState([]);
+  const [transactions,      setTransactions]        = useState([]);
+  const [adminWhatsapp,     setAdminWhatsapp]      = useState("");
 
   const navigate = useNavigate();
 
@@ -843,7 +906,9 @@ export default function PartnerDashboard() {
       const data = await res.json();
       setMessage(data.message                    || "Tableau de bord partenaire");
       setWallet(data.wallet_balance              || 0);
+      setCommissionBalance(data.commission_balance || 0);
       setStats(data.stats                        || { clients: 0, reabonnements: 0, revenus: 0 });
+      setCommissionTotal(data.commission_total   || 0);
       setCommissions(data.commissions_par_formule || []);
       setTransactions(data.transactions          || []);
       setAdminWhatsapp(data.admin_whatsapp       || "");
@@ -979,7 +1044,14 @@ const renderPage = () => {
       return <PageStatistiques stats={stats} commissionsParFormule={commissionsParFormule} />;
 
     case "portefeuille":
-      return <PagePortefeuille wallet={wallet} setWallet={setWallet} transactions={transactions} />;
+      return <PagePortefeuille
+        wallet={wallet}
+        setWallet={setWallet}
+        commissionBalance={commissionBalance}
+        setCommissionBalance={setCommissionBalance}
+        commissionTotal={commissionTotal}
+        transactions={transactions}
+      />;
 
     case "parametres":
       return <PageParametres onLogout={handleLogout} />;
@@ -997,6 +1069,7 @@ const renderPage = () => {
         <PageAccueil
           message={message}
           wallet={wallet}
+          commissionTotal={commissionTotal}
           navigate={navigate}
           adminWhatsapp={adminWhatsapp}
         />

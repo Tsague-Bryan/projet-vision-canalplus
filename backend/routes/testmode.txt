@@ -1,0 +1,70 @@
+// ================================================================
+// MODE TEST FUJISAT — À intégrer dans routes/reabonnement.js
+// ================================================================
+// Dans ton fichier .env, ajoute :
+//   FUJISAT_TEST_MODE=true
+//
+// Quand FUJISAT_TEST_MODE=true :
+//   - L'appel réel à l'API Fujisat est court-circuité
+//   - Une réponse simulée "success" est retournée
+//   - Le débit du portefeuille ET le calcul des commissions fonctionnent normalement
+//   - La facture est générée normalement
+//   - Toutes les données sont enregistrées en BDD
+// ================================================================
+
+// ── Fonction à utiliser à la place de l'appel axios Fujisat ──────────────────
+const callFujisat = async (url, payload, auth, timeout = 60000) => {
+  // MODE TEST : court-circuiter l'API réelle
+  if (process.env.FUJISAT_TEST_MODE === "true") {
+    console.log("🧪 [TEST MODE] Simulation Fujisat activée");
+    console.log("🧪 [TEST MODE] Payload qui aurait été envoyé :", JSON.stringify(payload, null, 2));
+    console.log("🧪 [TEST MODE] URL cible :", url);
+
+    // Simuler un délai réseau réaliste
+    await new Promise(resolve => setTimeout(resolve, 800));
+
+    // Retourner une réponse simulée identique à celle de Fujisat
+    return {
+      data: {
+        success:    true,
+        message:    "Réabonnement effectué avec succès [MODE TEST]",
+        reference:  `TEST-${Date.now()}`,
+        numeroAbonne: payload.numabo || payload.numero_abonne,
+        formule:    payload.offreCode,
+        dateDebut:  new Date().toLocaleDateString("fr-FR"),
+        dateFin:    new Date(Date.now() + 30 * 24 * 60 * 60 * 1000).toLocaleDateString("fr-FR"),
+      }
+    };
+  }
+
+  // MODE RÉEL : appel API normal
+  const axios = require("axios");
+  return await axios.post(url, payload, {
+    auth,
+    headers: { "Content-Type": "application/json" },
+    timeout,
+  });
+};
+
+module.exports = { callFujisat };
+
+// ================================================================
+// INSTRUCTIONS D'INTÉGRATION dans reabonnement.js :
+// ================================================================
+// 1. Ajoute en haut du fichier :
+//    const { callFujisat } = require("./testMode"); // ou le chemin correct
+//
+// 2. Remplace tous les blocs :
+//    apiResponse = await axios.post(`${process.env.FUJISAT_URL}/...`, payload, { auth: {...}, ... })
+//
+//    Par :
+//    apiResponse = await callFujisat(
+//      `${process.env.FUJISAT_URL}/public-api/operation/re-subscription/renew`,
+//      fujisatPayload,
+//      { username: process.env.FUJISAT_USER, password: process.env.FUJISAT_PASS }
+//    )
+//
+// 3. Dans ton .env :
+//    FUJISAT_TEST_MODE=true   ← pour les tests
+//    FUJISAT_TEST_MODE=false  ← pour la production
+// ================================================================

@@ -240,7 +240,6 @@ export default function Boutique() {
 
   return (
     <>
-      <Navbar />
 
       <div className="bg-gray-100 min-h-screen pt-16 px-6 pb-12" style={{ fontFamily: "'Poppins', sans-serif" }}>
         <h1 className="text-4xl font-bold text-center text-gray-900 mb-12">

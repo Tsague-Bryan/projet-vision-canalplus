@@ -1,7 +1,7 @@
 // server.js
+require("dotenv").config();
 const express = require('express');
 const cors = require('cors');
-require("dotenv").config();
 const fs = require('fs');
 const path = require('path');
 const http = require('http');
@@ -14,6 +14,7 @@ const reabonnementRoutes = require("./routes/reabonnement");
 const adminRoutes = require("./routes/admin");
 const abonneRoutes = require("./routes/abonne");
 const withdrawRoutes = require("./routes/withdraw");
+const technicienRoutes = require("./routes/technicien");
 
 const app = express();
 app.use(cors());
@@ -38,6 +39,10 @@ app.use((req, res, next) => {
 const invoicesDir = path.join(__dirname, 'invoices');
 if (!fs.existsSync(invoicesDir)) fs.mkdirSync(invoicesDir, { recursive: true });
 app.use('/invoices', express.static(invoicesDir));
+const uploadsDir = path.join(__dirname, 'uploads');
+if (!fs.existsSync(uploadsDir)) fs.mkdirSync(uploadsDir, { recursive: true });
+app.use('/uploads', express.static(uploadsDir));
+
 
 app.use('/auth', authRoutes);
 app.use('/api', dashboardRoutes);
@@ -46,6 +51,8 @@ app.use("/api", adminRoutes);
 app.use("/api/abonne", abonneRoutes);
 app.use("/api/partner", withdrawRoutes);
 app.use("/api", require("./routes/abonnements"));
+app.use("/api/partner", technicienRoutes);
+app.use("/api", technicienRoutes);
 
 // Gestion des connexions Socket.io
 io.on('connection', (socket) => {

@@ -6,140 +6,340 @@ const axios   = require("axios");
 const auth    = require("../middleware/auth");
 const fs      = require("fs");
 const path    = require("path");
+const https   = require("https");
+const { calculateAndApplyCommissions, calculateAdminCommission } = require("../utils/commissionEngine");
+
+
+
+// ✅ Agent HTTPS qui accepte les certificats auto-signés
+const httpsAgent = new https.Agent({ rejectUnauthorized: false });
 
 // ── Mapping codes formules ─────────────────────────────────────────────────────
 const optionCodeMap = {
-  "Access":"ACDD","Evasion":"EVDD","Évasion":"EVDD",
-  "Access+":"ACPDD","Evasion+":"EVPDD","Tout Canal+":"TCADD",
-};
-const mapOptionCodes = (codes) =>
-  Array.isArray(codes) ? codes.map(c => optionCodeMap[c] || c).filter(Boolean) : [];
-
-// ── Noms lisibles des formules ─────────────────────────────────────────────────
-const FORMULE_NAMES = {
-  ACDD:"Access", EVDD:"Évasion", ACPDD:"Access+", EVPDD:"Évasion+", TCADD:"Tout Canal+",
-};
-
-// ══════════════════════════════════════════════════════════════════════════════
-// MODE TEST FUJISAT
-// ══════════════════════════════════════════════════════════════════════════════
-// ✅ CORRECTION : lire la variable d'environnement à chaque appel (pas une seule fois au démarrage)
-const isTestMode = () => {
-  // On force la relecture à chaque fois
-  return String(process.env.FUJISAT_TEST_MODE).toLowerCase().trim() === "true";
+  "Access":          "ACDD",
+  "Evasion":         "EVDD",
+  "Évasion":         "EVDD",
+  "Access+":         "ACPDD",
+  "Evasion+":        "EVPDD",
+  "Évasion+":        "EVPDD",
+  "Tout Canal+":     "TCADD",
+  "Charme":          "CHARME",
+  "CHARME":          "CHARME",
+  "charme":          "CHARME",
+  "English Basic":   "ENGLISH PLUS DD",
+  "English+":        "ENGLISH PLUS DD",
+  "English +":       "ENGLISH PLUS DD",
+  "ENGLISH+":        "ENGLISH PLUS DD",
+  "ENGLISH PLUS DD": "ENGLISH PLUS DD",
 };
 
-const callFujisat = async (url, payload) => {
-  // ✅ Vérifier le mode test DANS la fonction, pas en dehors
+const englishOptionByOffer = {
+  ACDD:  "EAOACDD",
+  EVDD:  "EAOEVDD",
+  ACPDD: "EAOACPDD",
+  EVPDD: "EAOEVPDD",
+};
+
+const canalOptionCodeMap = {
+  "Charme":           "CHR",
+  "CHARME":           "CHR",
+  "charme":           "CHR",
+  "CHR":              "CHR",
+  "Netflix":          "NFX1SMDD",
+  "NETFLIX":          "NFX1SMDD",
+  "Netflix Basic":    "NFX1SMDD",
+  "Netflix Standard": "NFX2SMDD",
+  "NETFLIX STANDARD": "NFX2SMDD",
+  "Netflix Premium":  "NFX4SMDD",
+  "NETFLIX PREMIUM":  "NFX4SMDD",
+};
+
+const mapCanalOptionCode = (code, offreCode) => {
+  const normalized = optionCodeMap[code] || code;
+  if (!normalized) return null;
+  if (normalized === "ENGLISH PLUS DD") return englishOptionByOffer[offreCode] || null;
+  if (normalized === "CHARME") return "CHR";
+  if (normalized === "NFX4SMDD" && offreCode === "TCADD") return "NFX4SHDD";
+  return canalOptionCodeMap[normalized] || normalized;
+};
+
+const mapOptionCodes = (codes, offreCode) =>
+  Array.isArray(codes) ? codes.map(c => mapCanalOptionCode(c, offreCode)).filter(Boolean) : [];
+
+const cleanFujisatValue = (value) => String(value ?? "").trim();
+
+// ── Prix des formules ──────────────────────────────────────────────────────────
+const PRIX_FORMULES = {
+  "ACDD":  5000,
+  "EVDD":  10500,
+  "ACPDD": 15000,
+  "EVPDD": 20000,
+  "TCADD": 28000,
+  "ENGLISH PLUS DD": 5000,
+  "CHARME": 7000,
+};
+
+const NOMS_FORMULES = {
+  "ACDD":  "Access",
+  "EVDD":  "Évasion",
+  "ACPDD": "Access+",
+  "EVPDD": "Évasion+",
+  "TCADD": "Tout Canal+",
+  "ENGLISH PLUS DD": "English+",
+  "CHARME": "Charme",
+};
+
+const UPGRADE_OPTION_CODES = new Set(["ENGLISH PLUS DD", "CHARME"]);
+
+// ── TEST MODE ─────────────────────────────────────────────────────────────────
+const isTestMode = () => String(process.env.FUJISAT_TEST_MODE).toLowerCase().trim() === "true";
+
+const fujisatBaseUrl = () => String(process.env.FUJISAT_URL || "").replace(/\/+$/, "");
+
+const createFujisatHttpsAgent = (allowSelfSigned = false) => new https.Agent({
+  keepAlive: false,
+  maxCachedSessions: 0,
+  rejectUnauthorized: !allowSelfSigned,
+  ALPNProtocols: ["http/1.1"],
+  minVersion: "TLSv1.2",
+});
+
+const fujisatAxiosOptions = (overrides = {}) => {
+  const allowSelfSigned = overrides.allowSelfSigned ?? String(process.env.FUJISAT_ALLOW_SELF_SIGNED || "").toLowerCase().trim() === "true";
+  return {
+    auth:    { username: process.env.FUJISAT_USER, password: process.env.FUJISAT_PASS },
+    headers: {
+      "Accept": "application/json",
+      "Content-Type": "application/json",
+      "Connection": "close",
+      "User-Agent": process.env.FUJISAT_USER_AGENT || "PostmanRuntime/7.43.0",
+    },
+    timeout: 120000,
+    transitional: { clarifyTimeoutError: true },
+    httpsAgent: createFujisatHttpsAgent(allowSelfSigned),
+  };
+};
+
+const fujisatErrorPayload = (err) => ({
+  status:  err.response?.status || null,
+  data:    err.response?.data || null,
+  message: err.response?.data?.message || err.response?.data?.error || err.message,
+  code:    err.code || null,
+  url:     err.config?.url || null,
+});
+ 
+
+const callFujisat = async (url, payload, options = {}) => {
   if (isTestMode()) {
-    console.log("🧪 [TEST MODE] Simulation Fujisat activée");
-    console.log("🧪 URL cible:", url);
-    console.log("🧪 Payload:", JSON.stringify(payload, null, 2));
-    // Délai simulé
-    await new Promise(r => setTimeout(r, 300));
+    console.log("🧪 [TEST MODE] Simulation Fujisat");
+    await new Promise(r => setTimeout(r, 400));
+    // ✅ Calcul correct des dates : fin = début + durée - 1 jour
+    const debut    = new Date();
+    const fin      = new Date(debut);
+    fin.setMonth(fin.getMonth() + (Number(payload.duree) || 1));
+    fin.setDate(fin.getDate() - 1);
     return {
       data: {
-        success:     true,
-        message:     "[TEST MODE] Réabonnement simulé avec succès",
-        reference:   `TEST-${Date.now()}`,
-        numeroAbonne: payload.numabo,
-        formule:     payload.offreCode,
+        success:   true,
+        message:   "[TEST MODE] Opération simulée avec succès",
+        reference: `TEST-${Date.now()}`,
+        numabo:    payload.numabo,
+        offreCode: payload.offreCode,
+        debabo:    debut.toLocaleDateString("fr-FR", { day: "2-digit", month: "2-digit", year: "numeric" }),
+        finabo:    fin.toLocaleDateString("fr-FR",   { day: "2-digit", month: "2-digit", year: "numeric" }),
       }
     };
   }
-
-  // Mode réel
-  console.log("📤 Envoi réel Fujisat:", url);
-  return await axios.post(url, payload, {
-    auth:    { username: process.env.FUJISAT_USER, password: process.env.FUJISAT_PASS },
-    headers: { "Content-Type": "application/json" },
-    timeout: 60000,
-  });
+  return await axios.post(url, payload, fujisatAxiosOptions(options));
 };
 
-// ── Commission depuis la table commission_rules (ou fallback fixe) ────────────
-const getCommission = async (connection, formuleCode) => {
-  try {
-    const code = optionCodeMap[formuleCode] || formuleCode;
-    const [tables] = await connection.query(
-      "SELECT TABLE_NAME FROM information_schema.TABLES WHERE TABLE_SCHEMA=DATABASE() AND TABLE_NAME='commission_rules'"
-    );
-    if (tables.length > 0) {
-      const [rows] = await connection.query(
-        "SELECT commission_actuelle FROM commission_rules WHERE formule_code = ?", [code]
-      );
-      if (rows.length > 0) return Number(rows[0].commission_actuelle);
+const callFujisatRenew = async (payload) => {
+  const configuredPath = process.env.FUJISAT_RENEW_PATH || "/public-api/operation/re-subscription/renew";
+  const paths = [...new Set([
+    configuredPath,
+    "/public-api/operation/re-subscription/execute",
+    "/public-api/operation/resubscription/renew",
+  ])];
+  let lastError;
+
+  for (const p of paths) {
+    const url = /^https?:\/\//i.test(p) ? p : `${fujisatBaseUrl()}${p.startsWith("/") ? p : `/${p}`}`;
+    try {
+      return await callFujisat(url, payload);
+    } catch (err) {
+      lastError = err;
+      if (err.code === "ECONNRESET") {
+        try {
+          console.warn("Fujisat ECONNRESET, nouvelle tentative HTTPS compatible sans cache TLS...");
+          return await callFujisat(url, payload, { allowSelfSigned: true });
+        } catch (retryErr) {
+          lastError = retryErr;
+        }
+      }
+      const status = lastError.response?.status;
+      if (![404, 405].includes(status)) throw lastError;
     }
-  } catch (_) {}
-  // Fallback : commissions fixes par palier de 300
-  const fallback = { ACDD:300, EVDD:600, ACPDD:900, TCADD:1200 };
-  const code = optionCodeMap[formuleCode] || formuleCode;
-  return fallback[code] || 300;
+  }
+
+  throw lastError;
 };
 
-// ── Génération facture client (ticket compact sans commission) ────────────────
-const genererFacture = ({ factureId, nomAbonne, numero_abonne, formule, duree, montant, type_operation, date, options }) => {
-  const testMode    = isTestMode();
-  const formuleLabel = FORMULE_NAMES[formule] || formule;
-  const optionsRows  = (options||[]).map(o=>`<tr><td>Option</td><td>${o}</td></tr>`).join("");
-  const testBanner   = testMode
-    ? `<div style="background:#fff3cd;border:1px dashed #f59e0b;padding:6px 10px;margin-bottom:12px;border-radius:4px;text-align:center;font-size:10px;color:#92400e;font-weight:bold">⚠ DOCUMENT TEST — SIMULATION</div>`
-    : "";
+// ── Calcul de la date de fin correcte ─────────────────────────────────────────
+// Règle : si réabonnement le 04 mai → fin le 03 juin (pas le 04 juin)
+const calculerDateFin = (dateDebutStr, duree) => {
+  try {
+    // dateDebutStr peut être au format dd/mm/yyyy ou yyyy-mm-dd
+    let debut;
+    if (dateDebutStr && dateDebutStr.includes("/")) {
+      const [d, m, y] = dateDebutStr.split("/");
+      debut = new Date(Number(y), Number(m) - 1, Number(d));
+    } else if (dateDebutStr) {
+      debut = new Date(dateDebutStr);
+    } else {
+      debut = new Date();
+    }
+    const fin = new Date(debut);
+    fin.setMonth(fin.getMonth() + (Number(duree) || 1));
+    fin.setDate(fin.getDate() - 1); // ✅ -1 jour
+    return fin.toLocaleDateString("fr-FR", { day: "2-digit", month: "2-digit", year: "numeric" });
+  } catch {
+    return null;
+  }
+};
 
-  const html = `<!DOCTYPE html><html lang="fr"><head><meta charset="UTF-8"/><title>Facture N°${factureId}</title>
+// ── Génération facture HTML ───────────────────────────────────────────────────
+const genererFacture = ({
+  factureId, partnerName, partnerPhone, partnerLocation, nomAbonne, numero_abonne,
+  materialNumber, formule, duree, montant, type_operation, dateDebut, dateFin,
+  numeroContrat, options,
+}) => {
+  const testMode     = isTestMode();
+  const formuleLabel = NOMS_FORMULES[formule] || formule;
+  const dateOp       = new Date().toLocaleDateString("fr-FR", { day: "2-digit", month: "2-digit", year: "numeric" });
+  const optionsRows  = (options || []).map(o => `
+    <tr>
+      <td style="padding:6px 10px;border-bottom:1px solid #e5e7eb">${o}</td>
+      <td style="padding:6px 10px;border-bottom:1px solid #e5e7eb;text-align:right">—</td>
+    </tr>`).join("");
+
+  const html = `<!DOCTYPE html>
+<html lang="fr">
+<head>
+<meta charset="UTF-8"/>
+<title>Facture N°${factureId}</title>
 <style>
 *{box-sizing:border-box;margin:0;padding:0}
-body{font-family:'Courier New',monospace;background:#f5f5f5;display:flex;justify-content:center;padding:30px 10px}
-.ticket{background:#fff;width:320px;padding:20px 18px;box-shadow:0 2px 12px rgba(0,0,0,.15)}
-.hdr{text-align:center;border-bottom:1px dashed #ccc;padding-bottom:14px;margin-bottom:14px}
-.logo{font-size:20px;font-weight:900}.logo .plus{color:#c8102e}
-.sub{font-size:9px;color:#888;margin-top:2px;letter-spacing:1px;text-transform:uppercase}
-.doc{margin-top:10px;font-size:11px;font-weight:bold;letter-spacing:2px;text-transform:uppercase;color:#c8102e}
-.meta{display:flex;justify-content:space-between;font-size:9px;color:#555;margin-bottom:12px}
-.sec{font-size:8px;letter-spacing:2px;text-transform:uppercase;color:#aaa;margin-bottom:6px}
-table{width:100%;border-collapse:collapse;margin-bottom:14px}
-td{font-size:10px;padding:3px 0;vertical-align:top}
-td:first-child{color:#666;width:45%}td:last-child{font-weight:bold;text-align:right}
-.sep{border:none;border-top:1px dashed #ccc;margin:12px 0}
-.total{display:flex;justify-content:space-between;align-items:center;margin-top:4px}
-.tl{font-size:11px;font-weight:bold;letter-spacing:1px;text-transform:uppercase}
-.ta{font-size:16px;font-weight:900;color:#c8102e}
-.badge{display:block;text-align:center;margin:14px 0 10px;padding:5px;background:#f0fdf4;border:1px solid #bbf7d0;border-radius:4px;font-size:10px;font-weight:bold;color:#16a34a;letter-spacing:1px}
-.cut{border:none;border-top:1px dashed #bbb;margin:18px -18px;position:relative}
-.cut-i{position:absolute;top:-8px;left:-4px;font-size:14px;color:#bbb;background:#fff;padding:0 2px}
-.foot{text-align:center;font-size:9px;color:#aaa;line-height:1.6}
-.foot strong{color:#555}
-@media print{body{background:#fff;padding:0}.ticket{box-shadow:none;width:100%;max-width:320px;margin:0 auto}}
-</style></head><body><div class="ticket">
-${testBanner}
-<div class="hdr">
-  <div class="logo">VISION CANAL<span class="plus">+</span></div>
-  <div class="sub">Grossiste agréé Canal+ Cameroun</div>
-  <div class="doc">${type_operation==="upgrade"?"UPGRADE FORMULE":"RÉABONNEMENT"}</div>
+body{font-family:Arial,Helvetica,sans-serif;font-size:11px;color:#111;background:#fff;padding:20px}
+.page{max-width:700px;margin:0 auto;border:1px solid #000;padding:0}
+.header-top{display:flex;align-items:center;justify-content:space-between;padding:12px 16px;border-bottom:2px solid #000}
+.logo-canal{font-size:22px;font-weight:900;color:#003087;letter-spacing:-1px}
+.company-info{text-align:center;flex:1;padding:0 20px;font-size:10px;line-height:1.6}
+.company-info strong{font-size:12px;display:block;margin-bottom:4px}
+.title-bar{background:#111;color:#fff;text-align:center;padding:8px;font-size:13px;font-weight:bold;letter-spacing:1px}
+.section{padding:10px 16px;border-bottom:1px solid #ccc}
+.section-title{font-weight:bold;font-size:10px;text-transform:uppercase;margin-bottom:6px;background:#f3f4f6;padding:3px 6px;border-left:3px solid #003087}
+.grid-2{display:grid;grid-template-columns:1fr 1fr;gap:4px}
+.field{display:flex;gap:4px;font-size:10px;line-height:1.7}
+.field .label{font-weight:bold;min-width:130px;flex-shrink:0}
+table.bouquet{width:100%;border-collapse:collapse;font-size:11px;margin-top:4px}
+table.bouquet thead tr{background:#111;color:#fff}
+table.bouquet thead th{padding:6px 10px;text-align:left;font-size:10px}
+table.bouquet tbody td{padding:6px 10px;border-bottom:1px solid #e5e7eb}
+.total-row{background:#f9f9f9;font-weight:bold}
+.total-row td{padding:8px 10px;border-top:2px solid #000;font-size:12px}
+.signatures{display:grid;grid-template-columns:1fr 1fr;gap:20px;padding:12px 16px;border-top:1px solid #ccc;margin-top:4px}
+.sig-box{border:1px solid #ccc;padding:8px;min-height:60px;font-size:10px;font-weight:bold}
+.footer-note{padding:8px 16px;font-size:9px;color:#555;border-top:1px solid #ccc;line-height:1.6}
+.test-banner{background:#fff3cd;border:2px dashed #f59e0b;padding:6px;text-align:center;font-size:10px;font-weight:bold;color:#92400e;margin:4px 16px}
+@media print{body{padding:0}.page{border:none}}
+</style>
+</head>
+<body>
+<div class="page">
+
+  ${testMode ? `<div class="test-banner">⚠ DOCUMENT TEST — Aucune opération réelle effectuée</div>` : ""}
+
+  <div class="header-top">
+    <div class="logo-canal"><strong>VISION CANAL+</strong></div>
+    <div class="company-info">
+      <strong>Grossiste agréé Canal+ Cameroun</strong>
+      ${partnerLocation || "Cameroun"}<br/>
+      Tel : ${partnerPhone || "+237 656 253 864"}
+    </div>
+    <div style="text-align:right;font-size:10px">
+      <div>Date : <strong>${dateOp}</strong></div>
+      <div>Réf : <strong>N°${factureId}</strong></div>
+      ${testMode ? '<div style="color:#f59e0b;font-weight:bold">⚠ TEST</div>' : ""}
+    </div>
+  </div>
+
+  <div class="title-bar">
+    ${type_operation === "upgrade" ? "UPGRADE DE FORMULE" : "RÉABONNEMENT CANAL+"} N° ${factureId}
+  </div>
+
+  <div class="section">
+    <div class="section-title">Informations de l'abonné — N° ${numero_abonne}</div>
+    <div class="grid-2">
+      <div class="field"><span class="label">Nom :</span><span class="val">${nomAbonne || "—"}</span></div>
+      <div class="field"><span class="label">N° abonné :</span><span class="val">${numero_abonne}</span></div>
+    </div>
+  </div>
+
+  <div class="section">
+    <div class="section-title">Matériel de l'abonné — Date de l'opération</div>
+    <div class="grid-2">
+      <div class="field"><span class="label">N° Décodeur :</span><span class="val">${materialNumber || "—"}</span></div>
+      <div class="field"><span class="label">Date de l'opération :</span><span class="val">${dateOp}</span></div>
+    </div>
+  </div>
+
+  <div class="section">
+    <div class="section-title">Contrat d'abonnement N° ${numeroContrat || "—"}</div>
+    <div class="grid-2">
+      <div class="field"><span class="label">Durée :</span><span class="val">${duree || 1} Mois</span></div>
+      <div class="field"><span class="label">Mode de règlement :</span><span class="val">Portefeuille numérique</span></div>
+      <div class="field"><span class="label">Date de début :</span><span class="val">${dateDebut || dateOp}</span></div>
+      <div class="field"><span class="label">Date de fin :</span><span class="val">${dateFin || calculerDateFin(dateDebut || dateOp, duree) || "—"}</span></div>
+    </div>
+  </div>
+
+  <div class="section">
+    <div class="section-title">Composition du bouquet — Montants payés</div>
+    <table class="bouquet">
+      <thead>
+        <tr><th>DÉSIGNATION</th><th style="text-align:right">MONTANT TTC</th></tr>
+      </thead>
+      <tbody>
+        <tr>
+          <td>${formuleLabel}${type_operation === "upgrade" ? " (Upgrade)" : ""}</td>
+          <td style="text-align:right">${Number(montant).toLocaleString("fr-FR")} FCFA</td>
+        </tr>
+        ${optionsRows}
+        <tr class="total-row">
+          <td>TOTAL TTC</td>
+          <td style="text-align:right">${Number(montant).toLocaleString("fr-FR")} F.CFA</td>
+        </tr>
+      </tbody>
+    </table>
+    <div style="margin-top:6px;font-size:10px;font-style:italic;color:#555">
+      Arrêté la présente facture à la somme de <strong>${Number(montant).toLocaleString("fr-FR")} francs CFA</strong>
+    </div>
+  </div>
+
+  <div class="signatures">
+    <div class="sig-box">Signature de l'agent<br/><br/><span style="font-weight:normal;font-size:10px">${partnerName}</span></div>
+    <div class="sig-box">Signature du client<br/><br/><span style="font-weight:normal;font-size:10px">${nomAbonne || "—"}</span></div>
+  </div>
+
+  <div class="footer-note">
+    Pour toute réclamation, veuillez contacter votre agent au ${partnerPhone || "+237 656 253 864"}.<br/>
+    <strong>Prière de conserver précieusement ce reçu car il vous sera demandé pour toute réclamation.</strong>
+    ${testMode ? '<br/><span style="color:#f59e0b;font-weight:bold">⚠ DOCUMENT GÉNÉRÉ EN MODE TEST — NON VALABLE</span>' : ""}
+  </div>
+
 </div>
-<div class="meta">
-  <span>N° <strong>${factureId}</strong></span>
-  <span>${new Date(date).toLocaleDateString("fr-FR",{day:"2-digit",month:"2-digit",year:"numeric"})}</span>
-  <span>${new Date(date).toLocaleTimeString("fr-FR",{hour:"2-digit",minute:"2-digit"})}</span>
-</div>
-<p class="sec">Informations abonné</p>
-<table>${nomAbonne?`<tr><td>Abonné</td><td>${nomAbonne}</td></tr>`:""}<tr><td>N° abonné</td><td>${numero_abonne}</td></tr></table>
-<hr class="sep"/>
-<p class="sec">Détail opération</p>
-<table>
-  <tr><td>Formule</td><td>${formuleLabel}</td></tr>
-  ${optionsRows}
-  ${type_operation!=="upgrade"?`<tr><td>Durée</td><td>${duree} mois</td></tr>`:""}
-  <tr><td>Prix formule</td><td>${Number(montant).toLocaleString("fr-FR")} FCFA</td></tr>
-</table>
-<hr class="sep"/>
-<div class="total"><span class="tl">Total</span><span class="ta">${Number(montant).toLocaleString("fr-FR")} FCFA</span></div>
-<span class="badge">✓ OPÉRATION VALIDÉE${testMode?" (TEST)":""}</span>
-<div class="cut"><span class="cut-i">✂</span></div>
-<div class="foot"><strong>Vision Canal+</strong><br/>Douala, Cameroun<br/>Merci de votre confiance !<br/>
-<span style="margin-top:4px;display:block">Facture N°${factureId} · ${new Date(date).toLocaleDateString("fr-FR")}</span>
-${testMode?`<span style="color:#f59e0b;font-weight:bold;display:block;margin-top:4px">⚠ DOCUMENT TEST</span>`:""}
-</div></div></body></html>`;
+</body>
+</html>`;
 
   const dir = path.join(__dirname, "../invoices");
   if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
@@ -158,14 +358,17 @@ router.post("/", auth, async (req, res) => {
   } = req.body;
   const userId   = req.user.id;
   const testMode = isTestMode();
-
+  const formuleCode = optionCodeMap[formule] || cleanFujisatValue(formule);
+  const numabo = cleanFujisatValue(numero_abonne);
+  const decoder = cleanFujisatValue(materialNumber);
+  const phone = cleanFujisatValue(telephoneAbonne);
   console.log(`📋 Réabonnement — TEST_MODE=${testMode}, formule=${formule}, montant=${montant}`);
 
   const missing = [];
-  if (!numero_abonne) missing.push("numero_abonne");
-  if (!formule)       missing.push("formule");
-  if (!duree)         missing.push("duree");
-  if (!montant)       missing.push("montant");
+  if (!numero_abonne)  missing.push("numero_abonne");
+  if (!formule)        missing.push("formule");
+  if (!duree)          missing.push("duree");
+  if (!montant)        missing.push("montant");
   if (!materialNumber) missing.push("materialNumber");
   if (!numeroContrat)  missing.push("numeroContrat");
   if (!testMode && !telephoneAbonne) missing.push("telephoneAbonne");
@@ -176,42 +379,59 @@ router.post("/", auth, async (req, res) => {
     connection = await pool.getConnection();
     await connection.beginTransaction();
 
+    // ✅ On récupère aussi telephone, ville, quartier du partenaire pour la facture
     const [[u]] = await connection.query(
-      "SELECT wallet_balance, name, prenom FROM users WHERE id = ? FOR UPDATE", [userId]
+      "SELECT wallet_balance, name, prenom, telephone, ville, quartier FROM users WHERE id = ? FOR UPDATE",
+      [userId]
     );
     if (!u) { await connection.rollback(); return res.status(404).json({ error: "Utilisateur introuvable" }); }
-    if (Number(u.wallet_balance) < Number(montant)) { await connection.rollback(); return res.status(400).json({ error: "Solde insuffisant" }); }
+    if (Number(u.wallet_balance) < Number(montant)) {
+      await connection.rollback();
+      return res.status(400).json({ error: "Solde insuffisant" });
+    }
 
-    // ✅ Appel Fujisat (réel ou simulé selon .env)
+    const mappedOptions = mapOptionCodes(options, formule);
     const payload = {
       offreCode:       formule,
       numabo:          numero_abonne,
       materialNumber,
-      duree,
-      telephoneAbonne: telephoneAbonne || "00237000000000",
       numeroContrat:   Number(numeroContrat) || 1,
-      optionCodes:     mapOptionCodes(options),
+      duree:           Number(duree) || 1,
+      telephoneAbonne,
     };
+    if (mappedOptions[0]) payload.optionCode = mappedOptions[0];
 
     let apiResponse;
     try {
-      apiResponse = await callFujisat(
-        `${process.env.FUJISAT_URL}/public-api/operation/re-subscription/renew`, payload
-      );
+      apiResponse = await callFujisatRenew(payload);
     } catch (err) {
+      const details = fujisatErrorPayload(err);
+      console.error("Echec Fujisat reabonnement:", details);
       await connection.rollback();
-      console.error("❌ Fujisat ERROR:", err.response?.data || err.message);
+      return res.status(502).json({ error: "Echec du reabonnement Canal+", details });
       return res.status(502).json({ error: "Échec du réabonnement Canal+", details: err.response?.data || err.message });
     }
-
     if (!apiResponse.data?.success) {
       await connection.rollback();
       return res.status(400).json({ error: "Réabonnement refusé par Canal+", details: apiResponse.data });
     }
 
-    // ✅ Commission depuis la table
-    const commission = await getCommission(connection, formule);
+    // ✅ Commissions partenaire (avec fix English+/Charme via commissionEngine corrigé)
+    const commissionResult = await calculateAndApplyCommissions(connection, {
+      formule,
+      options,
+      montant,
+      userId,
+      numeroAbonne:  numero_abonne,
+      operationType: "reabonnement",
+    });
+    const commission = commissionResult.total;
     const newBalance = Number(u.wallet_balance) - Number(montant);
+
+    // ✅ Calcul correct de la date de fin (début + durée - 1 jour)
+    const dateDebutBrut = apiResponse.data?.debabo || null;
+    let dateDebut = dateDebutBrut;
+    let dateFin   = calculerDateFin(dateDebutBrut, duree);
 
     await connection.query(
       "UPDATE users SET wallet_balance=?, commission_balance=COALESCE(commission_balance,0)+?, commission_total=COALESCE(commission_total,0)+? WHERE id=?",
@@ -219,40 +439,70 @@ router.post("/", auth, async (req, res) => {
     );
 
     const [ins] = await connection.query(
-      "INSERT INTO reabonnements (users_id,numero_abonne,formule,montant,duree,telephoneAbonne,commission,type_operation,created_at) VALUES (?,?,?,?,?,?,?,'reabonnement',NOW())",
-      [userId, numero_abonne, formule, montant, duree, telephoneAbonne||"", commission]
+      `INSERT INTO reabonnements
+         (users_id, numero_abonne, formule, montant, duree, telephoneAbonne, commission, type_operation, created_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, 'reabonnement', NOW())`,
+      [userId, numero_abonne, formule, montant, duree, telephoneAbonne || "", commission]
     );
 
-    const partnerName = `${u.prenom||""} ${u.name}`.trim();
-    const notifMsg = `💰 ${partnerName} → ${numero_abonne} (${formule}) — ${Number(montant).toLocaleString()} FCFA | Commission: ${commission} FCFA${testMode?" [TEST]":""}`;
-    await connection.query("INSERT INTO notifications (type,message,created_at) VALUES (?,?,NOW())", ["reabonnement", notifMsg]);
+    const partnerName     = `${u.prenom || ""} ${u.name}`.trim();
+    // ✅ Infos partenaire dynamiques sur la facture
+    const partnerPhone    = u.telephone || "+237 656 253 864";
+    const partnerLocation = [u.ville, u.quartier].filter(Boolean).join(", ") || "Cameroun";
+
+    await connection.query(
+      "INSERT INTO notifications (type,message,created_at) VALUES (?,?,NOW())",
+      ["reabonnement", `💰 ${partnerName} → ${numero_abonne} (${formule}) — ${Number(montant).toLocaleString()} FCFA | Commission: ${commission} FCFA${testMode ? " [TEST]" : ""}`]
+    );
+
+    // ✅ Commission admin à 6% sur chaque réabonnement
+    await calculateAdminCommission(connection, {
+      reabonnementId: ins.insertId,
+      userId,
+      numeroAbonne:   numero_abonne,
+      formuleCode:    formule,
+      formuleName:    NOMS_FORMULES[formule] || formule,
+      montant:        Number(montant),
+      tauxAdmin:      6,
+    });
+
     await connection.commit();
 
-    // Génération facture après commit
     const factureUrl = genererFacture({
-      factureId:      ins.insertId,
+      factureId:       ins.insertId,
+      partnerName,
+      partnerPhone,
+      partnerLocation,
       nomAbonne,
       numero_abonne,
+      materialNumber,
       formule,
       duree,
       montant,
-      type_operation: "reabonnement",
-      date:           new Date(),
+      type_operation:  "reabonnement",
+      dateDebut,
+      dateFin,
+      numeroContrat,
       options,
     });
 
-    if (req.io) req.io.emit("new_notification", { type:"reabonnement", message: notifMsg });
+    if (req.io) {
+      req.io.emit("new_notification",      { type: "reabonnement", message: `💰 Réabonnement ${formule} — ${numero_abonne}` });
+      req.io.emit("commission_rules_update", { type: "reabonnement", formule });
+      req.io.emit("admin_dashboard_update", { type: "reabonnement", user_id: userId });
+      req.io.emit(`partner_dashboard_update_${userId}`, { type: "reabonnement" });
+    }
 
     return res.json({
-      success:        true,
-      message:        testMode ? "[TEST] Réabonnement simulé avec succès" : "Réabonnement effectué avec succès",
-      wallet_balance: newBalance,
+      success:            true,
+      message:            testMode ? "[TEST] Réabonnement simulé" : "Réabonnement effectué avec succès",
+      wallet_balance:     newBalance,
       commission,
-      facture_url:    factureUrl,
-      test_mode:      testMode,
-      whatsappLink:   `https://wa.me/237656253864?text=${encodeURIComponent(`Réabonnement Canal+ réussi pour ${numero_abonne} (${formule})`)}`,
+      commission_details: commissionResult.details,
+      facture_url:        factureUrl,
+      test_mode:          testMode,
+      whatsappLink:       `https://wa.me/237656253864?text=${encodeURIComponent(`Réabonnement Canal+ réussi pour ${numero_abonne} (${NOMS_FORMULES[formule] || formule})`)}`,
     });
-
   } catch (err) {
     if (connection) await connection.rollback();
     console.error("🔥 ERREUR reabonnement:", err);
@@ -268,32 +518,50 @@ router.post("/", auth, async (req, res) => {
 router.post("/upgrade", auth, async (req, res) => {
   const {
     numero_abonne, formule, materialNumber, numeroContrat,
-    telephoneAbonne = "", options = [], montant, nomAbonne = "",
+    telephoneAbonne = "", options = [],
+    montant,
+    formuleActuelle,
+    nomAbonne = "",
   } = req.body;
   const userId   = req.user.id;
   const testMode = isTestMode();
 
   const missing = [];
-  if (!numero_abonne) missing.push("numero_abonne");
-  if (!formule)       missing.push("formule");
+  if (!numero_abonne)  missing.push("numero_abonne");
+  if (!formule)        missing.push("formule");
   if (!materialNumber) missing.push("materialNumber");
   if (!numeroContrat)  missing.push("numeroContrat");
-  if (!montant || Number(montant) <= 0) missing.push("montant");
+
+  const formuleCode    = optionCodeMap[formule] || formule;
+  const currentCode    = formuleActuelle ? (optionCodeMap[formuleActuelle] || formuleActuelle) : null;
+  const prixNouvelle   = PRIX_FORMULES[formuleCode] || Number(montant) || 0;
+  const prixActuelle   = currentCode ? (PRIX_FORMULES[currentCode] || 0) : 0;
+  const montantFacture = UPGRADE_OPTION_CODES.has(formuleCode)
+    ? prixNouvelle
+    : prixActuelle > 0
+      ? Math.max(0, prixNouvelle - prixActuelle)
+      : Number(montant) || 0;
+
+  console.log(`🔄 Upgrade: ${formuleActuelle}(${prixActuelle}) → ${formule}(${prixNouvelle}) = delta ${montantFacture}`);
+
+  if (montantFacture <= 0 && !testMode) {
+    return res.status(400).json({ error: `Montant invalide. Calcul: ${prixNouvelle} - ${prixActuelle} = ${montantFacture} FCFA` });
+  }
   if (missing.length > 0) return res.status(400).json({ error: "Données manquantes", missing });
 
-  const montantFacture = Number(montant);
   let connection;
   try {
     connection = await pool.getConnection();
     await connection.beginTransaction();
 
     const [[u]] = await connection.query(
-      "SELECT wallet_balance, name, prenom FROM users WHERE id = ? FOR UPDATE", [userId]
+      "SELECT wallet_balance, name, prenom, telephone, ville, quartier FROM users WHERE id = ? FOR UPDATE",
+      [userId]
     );
     if (!u) { await connection.rollback(); return res.status(404).json({ error: "Utilisateur introuvable" }); }
-    if (Number(u.wallet_balance) < montantFacture) {
+    if (!testMode && Number(u.wallet_balance) < montantFacture) {
       await connection.rollback();
-      return res.status(400).json({ error: `Solde insuffisant. Requis: ${montantFacture} FCFA` });
+      return res.status(400).json({ error: `Solde insuffisant. Requis: ${montantFacture} FCFA, Disponible: ${u.wallet_balance} FCFA` });
     }
 
     const payload = {
@@ -301,67 +569,119 @@ router.post("/upgrade", auth, async (req, res) => {
       numabo:         numero_abonne,
       materialNumber,
       numeroContrat:  Number(numeroContrat) || 1,
-      optionCodes:    mapOptionCodes(options),
+      optionCodes:    mapOptionCodes(options, formule),
       montantMensuel: montantFacture,
     };
 
     let apiResponse;
     try {
-      apiResponse = await callFujisat(
-        `${process.env.FUJISAT_URL}/public-api/operation/upgrade/execute`, payload
-      );
+      apiResponse = await callFujisat(`${process.env.FUJISAT_URL}/public-api/operation/upgrade/execute`, payload);
     } catch (err) {
       await connection.rollback();
       return res.status(502).json({ error: "Échec de l'upgrade Canal+", details: err.response?.data || err.message });
     }
-
     if (!apiResponse.data?.success) {
       await connection.rollback();
       return res.status(400).json({ error: "Upgrade refusé par Canal+", details: apiResponse.data });
     }
 
-    const commission = await getCommission(connection, formule);
-    const newBalance = Number(u.wallet_balance) - montantFacture;
+   // ✅ Pour English+ et Charme upgradés directement comme formule principale,
+// on s'assure que le montant utilisé est le prix réel de l'option
+const PRIX_OPTIONS = {
+  "ENGLISH PLUS DD": 5000,
+  "CHARME":          7000,
+};
+const montantPourCommission = PRIX_OPTIONS[formule] || montantFacture;
+
+const commissionResult = await calculateAndApplyCommissions(connection, {
+  formule,
+  options,
+  montant: montantPourCommission,
+  userId,
+  numeroAbonne:  numero_abonne,
+  operationType: "upgrade",
+});
+    const commission = commissionResult.total;
+    const newBalance = Number(u.wallet_balance) - (testMode ? 0 : montantFacture);
 
     await connection.query(
       "UPDATE users SET wallet_balance=?, commission_balance=COALESCE(commission_balance,0)+?, commission_total=COALESCE(commission_total,0)+? WHERE id=?",
       [newBalance, commission, commission, userId]
     );
+
     const [ins] = await connection.query(
-      "INSERT INTO reabonnements (users_id,numero_abonne,formule,montant,duree,telephoneAbonne,commission,type_operation,created_at) VALUES (?,?,?,?,?,?,?,'upgrade',NOW())",
+      `INSERT INTO reabonnements
+         (users_id, numero_abonne, formule, montant, duree, telephoneAbonne, commission, type_operation, created_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, 'upgrade', NOW())`,
       [userId, numero_abonne, formule, montantFacture, 1, telephoneAbonne, commission]
     );
 
-    const partnerName = `${u.prenom||""} ${u.name}`.trim();
-    const notifMsg = `🔄 ${partnerName} upgrade ${numero_abonne} → ${formule} | ${montantFacture} FCFA | Commission: ${commission} FCFA${testMode?" [TEST]":""}`;
-    await connection.query("INSERT INTO notifications (type,message,created_at) VALUES (?,?,NOW())", ["upgrade", notifMsg]);
+    const partnerName     = `${u.prenom || ""} ${u.name}`.trim();
+    const partnerPhone    = u.telephone || "+237 656 253 864";
+    const partnerLocation = [u.ville, u.quartier].filter(Boolean).join(", ") || "Cameroun";
+
+    await connection.query(
+      "INSERT INTO notifications (type,message,created_at) VALUES (?,?,NOW())",
+      ["upgrade", `🔄 ${partnerName} upgrade ${numero_abonne} → ${formule} | ${montantFacture} FCFA | Commission: ${commission} FCFA${testMode ? " [TEST]" : ""}`]
+    );
+
+    // ✅ Commission admin 6% sur upgrade aussi
+    await calculateAdminCommission(connection, {
+      reabonnementId: ins.insertId,
+      userId,
+      numeroAbonne:   numero_abonne,
+      formuleCode:    formule,
+      formuleName:    NOMS_FORMULES[formule] || formule,
+      montant:        montantFacture,
+      tauxAdmin:      6,
+    });
+
     await connection.commit();
 
+    // ✅ Pour les upgrades : dateDebut/dateFin = même que la formule existante
+    // On récupère depuis la réponse API si disponible
+    const dateDebutUpgrade = apiResponse.data?.debabo || new Date().toLocaleDateString("fr-FR", { day: "2-digit", month: "2-digit", year: "numeric" });
+    const dateFinUpgrade   = apiResponse.data?.finabo  || calculerDateFin(dateDebutUpgrade, 1);
+
     const factureUrl = genererFacture({
-      factureId:      ins.insertId,
+      factureId:       ins.insertId,
+      partnerName,
+      partnerPhone,
+      partnerLocation,
       nomAbonne,
       numero_abonne,
+      materialNumber,
       formule,
-      duree:          1,
-      montant:        montantFacture,
-      type_operation: "upgrade",
-      date:           new Date(),
+      duree:           1,
+      montant:         montantFacture,
+      type_operation:  "upgrade",
+      dateDebut:       dateDebutUpgrade,
+      dateFin:         dateFinUpgrade,
+      numeroContrat,
       options,
     });
 
-    if (req.io) req.io.emit("new_notification", { type:"upgrade", message: notifMsg });
+    if (req.io) {
+      req.io.emit("new_notification",      { type: "upgrade", message: `🔄 Upgrade ${formule} — ${numero_abonne}` });
+      req.io.emit("commission_rules_update", { type: "upgrade", formule });
+      req.io.emit("admin_dashboard_update", { type: "upgrade", user_id: userId });
+      req.io.emit(`partner_dashboard_update_${userId}`, { type: "upgrade" });
+    }
 
     return res.json({
-      success:        true,
-      message:        testMode ? "[TEST] Upgrade simulé" : "Upgrade effectué avec succès",
-      wallet_balance: newBalance,
+      success:            true,
+      message:            testMode ? "[TEST] Upgrade simulé" : "Upgrade effectué avec succès",
+      wallet_balance:     newBalance,
       commission,
+      commission_details: commissionResult.details,
       montantFacture,
-      facture_url:    factureUrl,
-      test_mode:      testMode,
-      whatsappLink:   `https://wa.me/237656253864?text=${encodeURIComponent(`Upgrade Canal+ réussi: ${numero_abonne} → ${formule}`)}`,
+      prixNouvelle,
+      prixActuelle,
+      nouvelleFormule:    formule,
+      facture_url:        factureUrl,
+      test_mode:          testMode,
+      whatsappLink:       `https://wa.me/237656253864?text=${encodeURIComponent(`Upgrade Canal+ réussi: ${numero_abonne} → ${NOMS_FORMULES[formule] || formule}`)}`,
     });
-
   } catch (err) {
     if (connection) await connection.rollback();
     console.error("🔥 ERREUR upgrade:", err);
@@ -371,7 +691,6 @@ router.post("/upgrade", auth, async (req, res) => {
   }
 });
 
-// ── GET facture ────────────────────────────────────────────────────────────────
 router.get("/facture/:id", auth, async (req, res) => {
   const fp = path.join(__dirname, "../invoices", `facture_${req.params.id}.html`);
   if (!fs.existsSync(fp)) return res.status(404).json({ error: "Facture introuvable" });

@@ -35,7 +35,7 @@ export default function Services() {
       title: "Assistance",
       description: "Notre service clients pour tous vos besoins",
       image: assistanceImg,
-      link: "https://wa.me/237656253864" // ✅ numéro WhatsApp (format international)
+      link: "https://wa.me/237656253864"
     },
     {
       title: "Contrôle Parental",
@@ -46,19 +46,17 @@ export default function Services() {
 
   return (
     <>
-   <Navbar />
-      {/* ✅ Ajout de padding-top pour éviter que le contenu soit caché */}
-      <div className="bg-gray-100 min-h-screen pt-8 px-6">
-        <h1 className="text-4xl font-bold text-center text-gray-900 mb-12">
+      <Navbar />
+      <div className="bg-background min-h-screen pt-8 px-6">
+        <h1 className="text-4xl font-bold text-center text-foreground mb-12">
           Nos Services Vision Canal+
         </h1>
 
-        {/* ✅ Grille des services */}
         <div className="grid md:grid-cols-3 gap-8">
           {services.map((service, index) => (
             <div
               key={index}
-              className="bg-white rounded-xl shadow-lg overflow-hidden hover:shadow-2xl transition duration-300 transform hover:-translate-y-2"
+              className="bg-card rounded-lg shadow-lg overflow-hidden hover:shadow-2xl transition duration-300 transform hover:-translate-y-2 border border-border"
             >
               <img
                 src={service.image}
@@ -66,18 +64,17 @@ export default function Services() {
                 className="w-full h-40 object-cover"
               />
               <div className="p-6 text-center">
-                <h2 className="text-xl font-semibold mb-2 text-gray-900">
+                <h2 className="text-xl font-semibold mb-2 text-foreground">
                   {service.title}
                 </h2>
-                <p className="text-gray-600">{service.description}</p>
+                <p className="text-muted-foreground">{service.description}</p>
 
-                {/* ✅ Bouton si lien présent */}
                 {service.link && (
                   <a
                     href={service.link}
                     target="_blank"
                     rel="noopener noreferrer"
-                    className="mt-4 inline-block bg-black text-white px-4 py-2 rounded-lg hover:bg-gray-800 transition"
+                    className="mt-4 inline-block bg-primary text-primary-foreground px-4 py-2 rounded-lg hover:bg-primary/90 transition"
                   >
                     Découvrir
                   </a>
@@ -87,11 +84,10 @@ export default function Services() {
           ))}
         </div>
 
-        {/* ✅ CTA Partenaire */}
-        <div className="text-center mt-12  mb-10">
+        <div className="text-center mt-12 mb-10">
           <Link
             to="/inscription"
-            className="bg-black text-white px-5 py-3 rounded-lg font-semibold hover:bg-gray-800 transition"
+            className="bg-primary text-primary-foreground px-5 py-3 rounded-lg font-semibold hover:bg-primary/90 transition"
           >
             Devenir Partenaire
           </Link>

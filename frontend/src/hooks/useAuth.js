@@ -1,5 +1,6 @@
 import { useEffect, useCallback } from "react";
 import { useNavigate } from "react-router-dom";
+import { clearSession, getToken } from "../lib/session";
  
 export function useAuth() {
   const navigate = useNavigate();
@@ -16,7 +17,7 @@ export function useAuth() {
   };
  
   const isTokenValid = useCallback(() => {
-    const token = localStorage.getItem("token");
+    const token = getToken();
     if (!token) return false;
     const decoded = decodeToken(token);
     if (!decoded) return false;
@@ -25,8 +26,7 @@ export function useAuth() {
   }, []);
  
   const logout = useCallback((message = "") => {
-    localStorage.removeItem("token");
-    localStorage.removeItem("user");
+    clearSession();
     if (message) alert(message);
     navigate("/LoginForm");
   }, [navigate]);
@@ -45,7 +45,7 @@ export function useAuth() {
       throw new Error("Token expiré");
     }
  
-    const token = localStorage.getItem("token");
+    const token = getToken();
     const res = await fetch(url, {
       ...options,
       headers: {

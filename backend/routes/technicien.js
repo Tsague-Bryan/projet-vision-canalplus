@@ -32,7 +32,7 @@ router.post("/demande-technicien", auth, async (req, res) => {
     );
 
     const partnerName = `${user?.prenom || ""} ${user?.name || ""}`.trim();
-    const message = `🔧 ${partnerName} a soumis une demande technique pour ${nom} (${ville}, ${quartier}) - Tél: ${telephone}`;
+    const message = ` ${partnerName} a soumis une demande technique pour ${nom} (${ville}, ${quartier}) - Tél: ${telephone}`;
 
     // Créer une notification pour l'admin
     await pool.query(
@@ -140,7 +140,7 @@ router.put("/admin/demandes-technicien/:id/statut", auth, async (req, res) => {
     );
 
     // Notification pour le partenaire
-    const messagePartenaire = `🔧 Votre demande pour ${demande.nom_client} est désormais : ${statut}`;
+    const messagePartenaire = ` Votre demande pour ${demande.nom_client} est désormais : ${statut}`;
     await pool.query(
       "INSERT INTO notifications (user_id, type, message, created_at) VALUES (?, ?, ?, NOW())",
       [demande.user_id, 'technicien_update', messagePartenaire]

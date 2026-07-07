@@ -15,6 +15,7 @@ const adminRoutes = require("./routes/admin");
 const abonneRoutes = require("./routes/abonne");
 const withdrawRoutes = require("./routes/withdraw");
 const technicienRoutes = require("./routes/technicien");
+const aiRoutes = require("./routes/ai");
 
 const app = express();
 app.use(cors());
@@ -36,9 +37,17 @@ app.use((req, res, next) => {
 });
 
 // Définition des routes
+const { repairInvoiceHtml } = require('./utils/invoiceHtml');
 const invoicesDir = path.join(__dirname, 'invoices');
 if (!fs.existsSync(invoicesDir)) fs.mkdirSync(invoicesDir, { recursive: true });
-app.use('/invoices', express.static(invoicesDir));
+app.get('/invoices/:file', (req, res) => {
+  const file = path.basename(String(req.params.file || ''));
+  if (!/^facture_[\w-]+\.html$/i.test(file)) return res.status(400).send('Facture invalide');
+  const fullPath = path.join(invoicesDir, file);
+  if (!fs.existsSync(fullPath)) return res.status(404).send('Facture introuvable');
+  const html = fs.readFileSync(fullPath, 'utf8');
+  return res.set('Content-Type', 'text/html; charset=utf-8').send(repairInvoiceHtml(html));
+});
 const uploadsDir = path.join(__dirname, 'uploads');
 if (!fs.existsSync(uploadsDir)) fs.mkdirSync(uploadsDir, { recursive: true });
 app.use('/uploads', express.static(uploadsDir));
@@ -53,6 +62,7 @@ app.use("/api/partner", withdrawRoutes);
 app.use("/api", require("./routes/abonnements"));
 app.use("/api/partner", technicienRoutes);
 app.use("/api", technicienRoutes);
+app.use("/api", aiRoutes);
 
 // Gestion des connexions Socket.io
 io.on('connection', (socket) => {

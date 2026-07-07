@@ -1,7 +1,29 @@
 import { useEffect, useState } from "react";
 import axios from "axios";
-import { apiUrl, serverUrl } from "../lib/api";
+import InvoiceViewer from "../components/InvoiceViewer";
+import { apiUrl } from "../lib/api";
 import { getToken } from "../lib/session";
+
+const ABONNEMENT_HISTORY_KEY = "vision_abonnement_identifiers_v1";
+const loadAbonnementHistory = () => {
+  try {
+    const parsed = JSON.parse(localStorage.getItem(ABONNEMENT_HISTORY_KEY) || "{}");
+    return parsed && typeof parsed === "object" ? parsed : {};
+  } catch (_) {
+    return {};
+  }
+};
+const saveAbonnementHistory = (form) => {
+  const current = loadAbonnementHistory();
+  const next = { ...current };
+  ["nom", "telephone", "decodeur"].forEach((field) => {
+    const value = String(form[field] || "").trim();
+    if (!value) return;
+    next[field] = [value, ...(next[field] || []).filter((item) => item !== value)].slice(0, 20);
+  });
+  localStorage.setItem(ABONNEMENT_HISTORY_KEY, JSON.stringify(next));
+  return next;
+};
 
 export default function Abonnements() {
   const [form, setForm] = useState({
@@ -19,6 +41,15 @@ export default function Abonnements() {
   const [message, setMessage] = useState("");
   const [loading, setLoading] = useState(false);
   const [successResult, setSuccessResult] = useState(null);
+  const [invoiceView, setInvoiceView] = useState(null);
+  const [history, setHistory] = useState(loadAbonnementHistory);
+  const [formules, setFormules] = useState([
+    { code: "ACDD", name: "Access", price: 5000 },
+    { code: "EVDD", name: "Evasion", price: 10500 },
+    { code: "ACPDD", name: "Access+", price: 15000 },
+    { code: "EVPDD", name: "Evasion+", price: 20000 },
+    { code: "TCADD", name: "Tout Canal+", price: 28000 },
+  ]);
 
   useEffect(() => {
     const fetchDecodeurs = async () => {
@@ -37,10 +68,39 @@ export default function Abonnements() {
       }
     };
     fetchDecodeurs();
+    const fetchFormules = async () => {
+      const token = getToken();
+      if (!token) return;
+      try {
+        const res = await axios.get(apiUrl("/formules?includeOptions=0"), {
+          headers: { Authorization: `Bearer ${token}` },
+        });
+        setFormules((res.data || []).filter(f => f.type === "formule"));
+      } catch (err) {
+        console.error(err);
+      }
+    };
+    fetchFormules();
   }, []);
 
+  const textOnlyFields = new Set(["nom", "ville", "quartier"]);
   const handleChange = (e) => {
-    setForm({ ...form, [e.target.name]: e.target.value });
+    const { name } = e.target;
+    let { value } = e.target;
+    if (name === "telephone") value = value.replace(/\D/g, "").slice(0, 9);
+    if (textOnlyFields.has(name)) value = value.replace(/[0-9]/g, "");
+    setForm({ ...form, [name]: value });
+  };
+
+  const validateForm = () => {
+    if (!/^[A-Za-zÀ-ÖØ-öø-ÿ' -]{2,}$/.test(form.nom.trim())) return "Nom invalide.";
+    if (!/^\d{9}$/.test(form.telephone)) return "Le téléphone doit contenir exactement 9 chiffres.";
+    if (!form.decodeur) return "Sélectionnez un décodeur.";
+    if (!/^\d+$/.test(String(form.decodeur))) return "Numéro de décodeur invalide.";
+    if (Number(form.duree) < 1 || Number(form.duree) > 12) return "La durée doit être comprise entre 1 et 12 mois.";
+    if (form.ville && !/^[A-Za-zÀ-ÖØ-öø-ÿ' -]{2,}$/.test(form.ville.trim())) return "Ville invalide.";
+    if (form.quartier && !/^[A-Za-zÀ-ÖØ-öø-ÿ' -]{2,}$/.test(form.quartier.trim())) return "Quartier invalide.";
+    return "";
   };
 
   const handleSubmit = async (e) => {
@@ -48,6 +108,11 @@ export default function Abonnements() {
     const token = getToken();
     if (!token) {
       setMessage("Utilisateur non connecté");
+      return;
+    }
+    const validationError = validateForm();
+    if (validationError) {
+      setMessage(validationError);
       return;
     }
     setLoading(true);
@@ -62,6 +127,7 @@ export default function Abonnements() {
 
       setMessage(res.data.message);
       setSuccessResult(res.data);
+      setHistory(saveAbonnementHistory(form));
       setForm({ nom: "", telephone: "", decodeur: "", formule: "ACDD", duree: 1, adresse: "", ville: "", quartier: "" });
 
       const refresh = await axios.get(apiUrl("/decodeurs"), {
@@ -76,7 +142,7 @@ export default function Abonnements() {
   };
 
   if (successResult?.success) {
-    const factureUrl = successResult.facture_url ? serverUrl(successResult.facture_url) : null;
+    const factureUrl = successResult.facture_url || null;
     return (
       <div className="min-h-screen flex items-center justify-center bg-background p-4">
         <div className="bg-card p-6 rounded-lg shadow-md w-full max-w-lg space-y-4 border border-border text-center">
@@ -87,20 +153,27 @@ export default function Abonnements() {
           )}
           {factureUrl ? (
             <div className="flex flex-col gap-3">
-              <a href={factureUrl} target="_blank" rel="noreferrer" className="w-full bg-primary text-primary-foreground p-3 rounded-lg hover:bg-primary/90 font-semibold">
+              <button type="button" onClick={() => setInvoiceView({ url: factureUrl, print: false })} className="w-full bg-primary text-primary-foreground p-3 rounded-lg hover:bg-primary/90 font-semibold">
                 Voir la facture
-              </a>
-              <button type="button" onClick={() => { const w = window.open(factureUrl, "_blank"); if (w) { w.focus(); setTimeout(() => w.print(), 800); } }} className="w-full bg-muted text-foreground p-3 rounded-lg hover:bg-muted/80 font-semibold">
+              </button>
+              <button type="button" onClick={() => setInvoiceView({ url: factureUrl, print: true })} className="w-full bg-muted text-foreground p-3 rounded-lg hover:bg-muted/80 font-semibold">
                 Imprimer la facture
               </button>
             </div>
           ) : (
-            <p className="text-sm text-muted-foreground">Facture en cours de génération...</p>
+            <p className="text-sm text-muted-foreground">Facture en cours de generation...</p>
           )}
           <button type="button" onClick={() => { setSuccessResult(null); setMessage(""); }} className="w-full border border-border text-muted-foreground p-3 rounded-lg hover:bg-muted/30 font-semibold">
             Nouvel abonnement
           </button>
         </div>
+        {invoiceView && (
+          <InvoiceViewer
+            invoiceUrl={invoiceView.url}
+            autoPrint={invoiceView.print}
+            onClose={() => setInvoiceView(null)}
+          />
+        )}
       </div>
     );
   }
@@ -112,19 +185,27 @@ export default function Abonnements() {
 
         <input
           name="nom"
+          list="abonnement-history-nom"
           placeholder="Nom complet"
           value={form.nom}
           onChange={handleChange}
           className="w-full p-3 border border-input rounded-lg bg-background text-foreground focus:outline-none focus:ring-2 focus:ring-ring"
         />
+        <datalist id="abonnement-history-nom">{(history.nom || []).map((item) => <option key={item} value={item} />)}</datalist>
 
         <input
           name="telephone"
+          list="abonnement-history-telephone"
           placeholder="Numéro de téléphone"
           value={form.telephone}
           onChange={handleChange}
+          inputMode="numeric"
+          maxLength={9}
+          pattern="[0-9]{9}"
+          title="Le numéro doit contenir exactement 9 chiffres"
           className="w-full p-3 border border-input rounded-lg bg-background text-foreground focus:outline-none focus:ring-2 focus:ring-ring"
         />
+        <datalist id="abonnement-history-telephone">{(history.telephone || []).map((item) => <option key={item} value={item} />)}</datalist>
 
         <select
           name="decodeur"
@@ -146,11 +227,11 @@ export default function Abonnements() {
           onChange={handleChange}
           className="w-full p-3 border border-input rounded-lg bg-background text-foreground focus:outline-none focus:ring-2 focus:ring-ring"
         >
-          <option value="ACDD">Access — 5 000 FCFA</option>
-          <option value="EVDD">Evasion — 10 500 FCFA</option>
-          <option value="ACPDD">Access+ — 15 000 FCFA</option>
-          <option value="EVPDD">Evasion+ — 20 000 FCFA</option>
-          <option value="TCADD">Tout Canal+ — 28 000 FCFA</option>
+          {formules.map((f) => (
+            <option key={f.code} value={f.code}>
+              {f.name} — {Number(f.price || 0).toLocaleString()} FCFA
+            </option>
+          ))}
         </select>
 
         <input

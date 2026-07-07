@@ -1,19 +1,26 @@
-import React, { useEffect, useState, useCallback } from "react";
+import React, { useEffect, useState, useCallback, useMemo, useRef } from "react";
 import { useNavigate, useSearchParams } from "react-router-dom";
 import axios from "axios";
-import { io } from "socket.io-client";
+import Swal from "sweetalert2";
+import { createAppSocket } from "../lib/socket";
+import AiAssistant from "../components/AiAssistant";
 import { LineChart, Line, XAxis, YAxis, Tooltip, CartesianGrid, ResponsiveContainer, BarChart, Bar } from "recharts";
 import AdminNavbar from "../components/AdminNavbar";
 import CommissionChart from "../components/CommissionChart";
-import { API_URL, SOCKET_URL, serverUrl } from "../lib/api";
-import { authHeaders, clearSession, hasActiveSession, installActivityTracker, isAuthExpiredResponse } from "../lib/session";
+import { API_URL, serverUrl } from "../lib/api";
+import { authFetchOptions, authHeaders, clearSession, hasActiveSession, installActivityTracker, isAuthExpiredResponse } from "../lib/session";
 import logo from "../assets/logo.png";
 
 const API        = API_URL;
 const authHdr    = authHeaders;
 const isExpired  = () => !hasActiveSession("admin");
+const isDisabledFormule = (item = {}) => {
+  const code = String(item.formule_code || item.code || item.formule || "").toUpperCase();
+  const name = String(item.formule_name || item.name || item.label || "").toLowerCase();
+  return code === "EVPDD" || name.includes("evasion+") || name.includes("evasion +") || name.includes("vasion+") || name.includes("vasion +");
+};
 
-// ── Icons ──────────────────────────────────────────────────────────────────────
+//  Icons 
 const icons = {
   dashboard:  ["M3 9.5L12 3l9 6.5V21a1 1 0 0 1-1 1H4a1 1 0 0 1-1-1V9.5z"],
   partners:   ["M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2","M23 21v-2a4 4 0 0 0-3-3.87","M16 3.13a4 4 0 0 1 0 7.75","M9 11a4 4 0 1 0 0-8 4 4 0 0 0 0 8z"],
@@ -37,6 +44,8 @@ const icons = {
   save:       ["M19 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11l5 5v11a2 2 0 0 1-2 2z","M17 21v-8H7v8","M7 3v5h8"],
   technicien: ["M14.7 6.3a1 1 0 0 0 0 1.4l1.6 1.6a1 1 0 0 0 1.4 0l3.77-3.77a6 6 0 0 1-7.94 7.94l-6.91 6.91a2.12 2.12 0 0 1-3-3l6.91-6.91a6 6 0 0 1 7.94-7.94l-3.76 3.76z"],
   eye:        ["M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z","M12 12m-3 0a3 3 0 1 0 6 0a3 3 0 1 0 -6 0"],
+  eyeOff:     ["M3 3l18 18","M10.6 10.6A3 3 0 0 0 14 14","M9.88 4.24A10.94 10.94 0 0 1 12 4c7 0 11 8 11 8a18.5 18.5 0 0 1-3.17 4.22","M6.61 6.61A18.27 18.27 0 0 0 1 12s4 8 11 8a10.8 10.8 0 0 0 5.39-1.39"],
+  settings:   ["M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z","M12 15a3 3 0 1 0 0-6 3 3 0 0 0 0 6z"],
 };
 
 const Icon = ({ name, size=18, className="" }) => {
@@ -44,7 +53,17 @@ const Icon = ({ name, size=18, className="" }) => {
   return <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" className={className}>{d.map((pd,i)=><path key={i} d={pd}/>)}</svg>;
 };
 
-const fmtDate = (d) => d ? new Date(d).toLocaleDateString("fr-FR",{day:"2-digit",month:"short",year:"numeric"}) : "—";
+const fmtDate = (d) => d ? new Date(d).toLocaleDateString("fr-FR",{day:"2-digit",month:"short",year:"numeric"}) : "";
+const fmtDateTime = (d) => {
+  if (!d) return "";
+  return new Date(d).toLocaleString("fr-FR", {
+    day: "2-digit",
+    month: "2-digit",
+    year: "numeric",
+    hour: "2-digit",
+    minute: "2-digit"
+  });
+};
 
 const StatusBadge = ({ status }) => {
   const cfg = {
@@ -62,13 +81,24 @@ const StatusBadge = ({ status }) => {
   return <span className={`inline-flex items-center px-2 py-0.5 rounded-full text-[11px] font-semibold border ${cls}`}>{label}</span>;
 };
 
-const KpiCard = ({ label, value, sub, color, icon }) => (
-  <div className={`rounded-lg p-5 flex items-start gap-4 border shadow-sm ${color}`}>
-    <div className="flex-shrink-0 w-10 h-10 rounded-xl bg-white/20 flex items-center justify-center"><Icon name={icon} size={18}/></div>
-    <div><p className="text-xs font-semibold uppercase tracking-widest opacity-70 mb-0.5">{label}</p><p className="text-2xl font-bold leading-none">{value}</p>{sub&&<p className="text-xs opacity-60 mt-1">{sub}</p>}</div>
-  </div>
-);
-
+const KpiCard = ({ label, value, sub, color = "", icon }) => {
+  const tone = color.includes("green") ? "text-emerald-600 bg-emerald-50 border-emerald-100"
+    : color.includes("amber") || color.includes("orange") ? "text-amber-600 bg-amber-50 border-amber-100"
+    : color.includes("red") ? "text-rose-600 bg-rose-50 border-rose-100"
+    : color.includes("purple") ? "text-violet-600 bg-violet-50 border-violet-100"
+    : color.includes("blue") ? "text-sky-600 bg-sky-50 border-sky-100"
+    : "text-slate-700 bg-slate-50 border-slate-100";
+  return (
+    <div className="rounded-lg p-4 sm:p-5 flex items-start gap-3 sm:gap-4 border border-border bg-card text-card-foreground shadow-sm min-w-0">
+      <div className={["flex-shrink-0 w-10 h-10 rounded-xl border flex items-center justify-center", tone].join(" ")}><Icon name={icon} size={18}/></div>
+      <div className="min-w-0">
+        <p className="text-[11px] font-semibold uppercase tracking-wide text-muted-foreground mb-1 break-words">{label}</p>
+        <p className="text-2xl font-bold leading-none text-foreground break-words">{value}</p>
+        {sub&&<p className="text-xs text-muted-foreground mt-1 break-words">{sub}</p>}
+      </div>
+    </div>
+  );
+};
 const ChartTooltip = ({ active, payload, label }) => {
   if(!active||!payload?.length) return null;
   return <div className="bg-card text-card-foreground text-xs px-3 py-2 rounded-xl shadow-xl border border-border"><p className="font-semibold text-muted-foreground mb-1">{label}</p>{payload.map((p,i)=><p key={i} style={{color:p.color}} className="font-bold">{Number(p.value).toLocaleString()}</p>)}</div>;
@@ -86,7 +116,7 @@ const Modal = ({ title, onClose, children }) => (
   </div>
 );
 
-// ✅ Lightbox pour les captures de recharge
+//  Lightbox pour les captures de recharge
 const Lightbox = ({ src, onClose }) => (
   <div className="fixed inset-0 z-50 flex items-center justify-center" style={{background:"rgba(0,0,0,0.85)",backdropFilter:"blur(6px)"}} onClick={onClose}>
     <div className="relative max-w-2xl w-full mx-4" onClick={e=>e.stopPropagation()}>
@@ -130,14 +160,15 @@ const navItems = [
   { id:"dashboard",   label:"Tableau de bord", icon:"dashboard"  },
   { id:"partners",    label:"Partenaires",      icon:"partners"   },
   { id:"stats",       label:"Statistiques",     icon:"stats"      },
-  { id:"wallets",     label:"Portefeuilles",    icon:"wallet"     },
   { id:"recharges",   label:"Recharges",        icon:"recharges"  },
   { id:"commissions", label:"Commissions",      icon:"commission" },
+  { id:"formules",    label:"Formules",         icon:"save"       },
   { id:"techniciens", label:"Techniciens",      icon:"technicien" },
   { id:"decoders",    label:"Décodeurs",        icon:"creditcard" },
+  { id:"settings",    label:"Paramètres",       icon:"settings"   },
 ];
 
-// ── Pagination ─────────────────────────────────────────────────────────────────
+//  Pagination 
 const PaginationBar = ({ currentPage, totalPages, onPageChange }) => {
   if(totalPages<=1) return null;
   return (
@@ -160,7 +191,17 @@ const PaginationBar = ({ currentPage, totalPages, onPageChange }) => {
   );
 };
 
-// ══════════════════════════════════════════════════════════════════════════════
+const buildAdminSearchParams = (page, rechargePage = 1, rechargeDate = "") => {
+  const params = {};
+  if (page && page !== "dashboard") params.page = page;
+  if (page === "recharges") {
+    if (rechargePage > 1) params.rechargePage = String(rechargePage);
+    if (rechargeDate) params.rechargeDate = rechargeDate;
+  }
+  return params;
+};
+
+// """"""""""""""""""""""""""""""""""""""""""""""""""""""""""""""""""""""""""""""
 export default function AdminDashboard() {
   const navigate = useNavigate();
   const [searchParams, setSearchParams] = useSearchParams();
@@ -170,14 +211,16 @@ export default function AdminDashboard() {
     return installActivityTracker(()=>{clearSession();navigate("/LoginForm");},"admin");
   },[navigate]);
 
-  const [activePage,    setActivePage]   = useState("dashboard");
+  const [activePage,    setActivePage]   = useState(searchParams.get("page") || "dashboard");
   const [sidebarOpen,   setSidebarOpen]  = useState(true);
-  // ✅ Mobile sidebar
+  //  Mobile sidebar
   const [mobileSidebarOpen, setMobileSidebarOpen] = useState(false);
   const [partners,      setPartners]     = useState([]);
   const [loading,       setLoading]      = useState(true);
   const [commissionTotal,   setCommissionTotal]   = useState(0);
   const [adminGains,        setAdminGains]        = useState(0);
+  const [adminGainRate,     setAdminGainRate]     = useState(6);
+  const [totalAdminRecharges, setTotalAdminRecharges] = useState(0);
   const [reabonnementTotal, setReabonnementTotal] = useState(0);
   const [chartData,         setChartData]         = useState([]);
   const [search,            setSearch]            = useState("");
@@ -190,14 +233,22 @@ export default function AdminDashboard() {
   const [showAddDecoderModal, setShowAddDecoderModal] = useState(false);
   const [newDecoder,          setNewDecoder]          = useState({ numero:"", partner_id:"" });
   const [addDecoderError,     setAddDecoderError]     = useState("");
+  const [decoderPage,         setDecoderPage]         = useState(1);
+  const decodersPerPage = 10;
 
   const [recharges,           setRecharges]           = useState([]);
   const [loadingRecharges,    setLoadingRecharges]    = useState(false);
   const [rechargeTotalCount,  setRechargeTotalCount]  = useState(0);
   const [rechargeTotalPages,  setRechargeTotalPages]  = useState(1);
-  const [rechargeCurrentPage, setRechargeCurrentPage] = useState(1);
-  const [rechargeDateFilter,  setRechargeDateFilter]  = useState("");
-  const [rechargeSearchDate,  setRechargeSearchDate]  = useState("");
+  const [rechargeCurrentPage, setRechargeCurrentPage] = useState(() =>
+    Math.max(1, parseInt(searchParams.get("rechargePage") || "1", 10) || 1)
+  );
+  const [rechargeDateFilter, setRechargeDateFilter] = useState(
+    () => searchParams.get("rechargeDate") || ""
+  );
+  const [rechargeSearchDate, setRechargeSearchDate] = useState(
+    () => searchParams.get("rechargeDate") || ""
+  );
   const [rejectedCount,       setRejectedCount]       = useState(0);
   const [lightboxSrc,         setLightboxSrc]         = useState(null);
 
@@ -212,17 +263,32 @@ export default function AdminDashboard() {
   const [commissionRulesEdit,   setCommissionRulesEdit]   = useState({});
   const [savingRule,            setSavingRule]            = useState(null);
   const [totalCommissionsAdmin, setTotalCommissionsAdmin] = useState(0);
+  const [commissionsPage,       setCommissionsPage]       = useState(1);
   const [balanceGlobal,         setBalanceGlobal]         = useState(false);
   const [togglingGlobal,        setTogglingGlobal]        = useState(false);
   const [togglingId,            setTogglingId]            = useState(null);
   const [commissionHistory,     setCommissionHistory]     = useState([]);
   const [commissionDate,        setCommissionDate]        = useState(()=>new Date().toISOString().slice(0,10));
+  const [cashboxHistory,        setCashboxHistory]        = useState([]);
+  const [cashboxTotals,         setCashboxTotals]         = useState({ total_added:0, total_removed:0 });
+  const [formules,              setFormules]              = useState([]);
+  const [formuleEdits,          setFormuleEdits]          = useState({});
+  const [savingFormule,         setSavingFormule]         = useState(null);
 
   // Commission sur abonnement
   const [abonnementCommission,     setAbonnementCommission]     = useState(2000);
   const [abonnementCommissionEdit, setAbonnementCommissionEdit] = useState(2000);
   const [savingAbonnement,         setSavingAbonnement]         = useState(false);
   const [abonnementMsg,            setAbonnementMsg]            = useState("");
+
+  // Configuration Générale (WhatsApp assistance & Fujisat)
+  const [adminWhatsappSetting,     setAdminWhatsappSetting]     = useState("");
+  const [fujisatUserSetting,       setFujisatUserSetting]       = useState("");
+  const [fujisatPassSetting,       setFujisatPassSetting]       = useState("");
+  const [fujisatTestModeSetting,   setFujisatTestModeSetting]   = useState(true);
+  const [savingSettings,           setSavingSettings]           = useState(false);
+  const [settingsMsg,              setSettingsMsg]              = useState("");
+  const [showFujisatPass,         setShowFujisatPass]         = useState(false);
 
   // Demandes technicien
   const [demandeTech,        setDemandeTech]        = useState([]);
@@ -234,20 +300,42 @@ export default function AdminDashboard() {
   const [newPartner, setNewPartner] = useState(emptyPartner);
   const [editData,   setEditData]   = useState({name:"",email:"",structure:"",pays:"",ville:"",quartier:"",telephone:"",codePromo:"",password:""});
 
-  useEffect(()=>{
-    const socket = io(SOCKET_URL,{transports:["websocket","polling"]});
-    socket.on("new_notification",(data)=>{if(data.type==="recharge"||data.type==="demande_retrait")fetchRecharges();if(data.type==="demande_technicien")fetchDemandeTech();});
-    socket.on("commission_rules_update",()=>fetchCommissions());
-    socket.on("admin_dashboard_update", ()=>{fetchPartners();fetchStats();fetchRecharges();fetchCommissions();});
-    return ()=>socket.disconnect();
-  },[]);
+  const goAdminPage = useCallback((page) => {
+    setActivePage(page);
+    setSearchParams(
+      buildAdminSearchParams(
+        page,
+        page === "recharges" ? rechargeCurrentPage : 1,
+        page === "recharges" ? rechargeDateFilter : ""
+      )
+    );
+  }, [rechargeCurrentPage, rechargeDateFilter, setSearchParams]);
 
-  const handleLogout = ()=>{
-    if(!window.confirm("Voulez-vous vraiment vous déconnecter ?")) return;
+  const updateRechargeFilters = useCallback((page, date) => {
+    setRechargeCurrentPage(page);
+    setRechargeDateFilter(date);
+    setRechargeSearchDate(date);
+    if (activePage === "recharges") {
+      setSearchParams(buildAdminSearchParams("recharges", page, date), { replace: true });
+    }
+  }, [activePage, setSearchParams]);
+
+  const handleLogout = async()=>{
+    const confirmResult = await Swal.fire({
+      title: "Déconnexion",
+      text: "Voulez-vous vraiment vous déconnecter ?",
+      icon: "question",
+      showCancelButton: true,
+      confirmButtonColor: "#e53935",
+      cancelButtonColor: "#d33",
+      confirmButtonText: "Oui, déconnexion",
+      cancelButtonText: "Annuler"
+    });
+    if(!confirmResult.isConfirmed) return;
     clearSession(); navigate("/LoginForm");
   };
 
-  // ══ FETCH ══════════════════════════════════════════════════════════════════
+  // "" FETCH """"""""""""""""""""""""""""""""""""""""""""""""""""""""""""""""""
 
   const fetchStats = useCallback(async()=>{
     try{
@@ -255,8 +343,11 @@ export default function AdminDashboard() {
       setReabonnementTotal(res.data.abonnements||0);
       setCommissionTotal(Number(res.data.commissions)||0);
       setAdminGains(Number(res.data.admin_gains)||0);
+      setAdminGainRate(Number(res.data.admin_gain_rate)||6);
+      setTotalAdminRecharges(Number(res.data.total_recharges)||0);
       const mois=["Jan","Fév","Mar","Avr","Mai","Jun","Jul","Aoû","Sep","Oct","Nov","Déc"];
-      setChartData((res.data.reabonnementsMois||[]).map(r=>({month:mois[(r.mois||1)-1],abonnements:r.total})));
+      const byMonth = new Map((res.data.reabonnementsMois||[]).map(r=>[Number(r.mois), Number(r.total)||0]));
+      setChartData(mois.map((month,index)=>({month,abonnements:byMonth.get(index+1)||0})));
     }catch(e){console.error(e);}
   },[]);
 
@@ -272,6 +363,67 @@ export default function AdminDashboard() {
     catch(e){console.error(e);}
     finally{setLoadingDecoders(false);}
   },[]);
+
+  const fetchSettings = useCallback(async()=>{
+    try{
+      const res = await axios.get(`${API}/admin/config/settings`, authHdr());
+      setAdminWhatsappSetting(res.data.admin_whatsapp || "");
+      setFujisatUserSetting(res.data.fujisat_user || "");
+      setFujisatPassSetting(res.data.fujisat_pass || "");
+      setFujisatTestModeSetting(String(res.data.fujisat_test_mode).toLowerCase() === "true");
+      setAdminGainRate(Number(res.data.admin_gain_rate) || 6);
+    }catch(e){
+      console.error("fetchSettings:", e);
+    }
+  }, []);
+
+  const saveSettings = async()=>{
+    setSavingSettings(true);
+    setSettingsMsg("");
+    try{
+      await axios.put(`${API}/admin/config/settings`, {
+        admin_whatsapp: adminWhatsappSetting,
+        fujisat_user: fujisatUserSetting,
+        fujisat_pass: fujisatPassSetting,
+        fujisat_test_mode: fujisatTestModeSetting,
+        admin_gain_rate: adminGainRate
+      }, authHdr());
+      setSettingsMsg("Paramètres enregistrés avec succès !");
+    }catch(e){
+      setSettingsMsg(" Erreur : " + (e.response?.data?.error || e.message));
+    }finally{
+      setSavingSettings(false);
+    }
+  };
+
+  const downloadOperationsReport = async () => {
+    const year = new Date().getFullYear();
+    const res = await fetch(`${API}/admin/reports/operations.csv?year=${year}`, authFetchOptions());
+    if (!res.ok) {
+      Swal.fire({ title: "Erreur", text: "Impossible de télécharger le rapport.", icon: "error", confirmButtonColor: "#e53935" });
+      return;
+    }
+    const blob = await res.blob();
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement("a");
+    link.href = url;
+    link.download = `rapport_operations_${year}.csv`;
+    document.body.appendChild(link);
+    link.click();
+    link.remove();
+    URL.revokeObjectURL(url);
+  };
+
+  const decoderTotalPages = Math.max(1, Math.ceil(decodeurs.length / decodersPerPage));
+  const decoderSafePage = Math.min(decoderPage, decoderTotalPages);
+  const paginatedDecodeurs = useMemo(() => {
+    const start = (decoderSafePage - 1) * decodersPerPage;
+    return decodeurs.slice(start, start + decodersPerPage);
+  }, [decodeurs, decoderSafePage]);
+
+  useEffect(() => {
+    if(decoderPage > decoderTotalPages) setDecoderPage(decoderTotalPages);
+  }, [decoderPage, decoderTotalPages]);
 
   const fetchRecharges = useCallback(async(page=rechargeCurrentPage, date=rechargeDateFilter)=>{
     setLoadingRecharges(true);
@@ -292,26 +444,32 @@ export default function AdminDashboard() {
     if(isExpired()){navigate("/LoginForm");return;}
     setLoadingCommissions(true);
     try{
-      const [summaryRes,statusRes,rulesRes,historyRes,configRes] = await Promise.all([
+      const [summaryRes,statusRes,rulesRes,historyRes,configRes,cashboxRes,formulesRes] = await Promise.all([
         axios.get(`${API}/admin/commissions-summary`,                         authHdr()),
         axios.get(`${API}/admin/balance-status`,                              authHdr()),
         axios.get(`${API}/admin/commission-rules`,                            authHdr()),
         axios.get(`${API}/admin/commission-operations?date=${commissionDate}`,authHdr()),
         axios.get(`${API}/admin/config/commission-abonnement`,                 authHdr()),
+        axios.get(`${API}/admin/commission-cashbox-movements?date=${commissionDate}`,authHdr()),
+        axios.get(`${API}/formules`,                                           authHdr()),
       ]);
       setCommissionsData(summaryRes.data.partenaires    ||[]);
-      setStatsFormules(summaryRes.data.stats_formules   ||[]);
+      setStatsFormules((summaryRes.data.stats_formules || []).filter(item => !isDisabledFormule(item)));
       setTotalCommissionsAdmin(Number(summaryRes.data.total_commissions||0));
       setAdminGains(Number(summaryRes.data.total_commissions||0));
       setBalanceGlobal(statusRes.data.balance_enabled===1);
       const rules = rulesRes.data||[];
       setCommissionRules(rules);
       setCommissionHistory(historyRes.data||[]);
+      setCashboxHistory(cashboxRes.data?.rows || []);
+      setCashboxTotals(cashboxRes.data?.totals || { total_added:0, total_removed:0 });
+      setFormules(formulesRes.data || []);
+      setFormuleEdits(Object.fromEntries((formulesRes.data || []).map(f=>[f.code, f.price])));
       const editMap={};
       rules.forEach(r=>{editMap[r.formule_code]="";});
       setCommissionRulesEdit(editMap);
 
-      // ✅ Charger la commission abonnement depuis localStorage (ou valeur par défaut)
+      //  Charger la commission abonnement depuis localStorage (ou valeur par défaut)
       const saved = localStorage.getItem("abonnement_commission_fixe");
       if(saved){setAbonnementCommission(Number(saved));setAbonnementCommissionEdit(Number(saved));}
       if(configRes.data?.valeur !== undefined){
@@ -338,27 +496,147 @@ export default function AdminDashboard() {
     finally{setLoadingTech(false);}
   },[techPage, navigate]);
 
-  useEffect(()=>{fetchPartners();fetchStats();fetchDecoders();},[fetchPartners,fetchStats,fetchDecoders]);
+  const callbacksRef = useRef();
+  callbacksRef.current = {
+    fetchPartners,
+    fetchStats,
+    fetchRecharges,
+    fetchCommissions,
+    fetchDemandeTech,
+    setPartners
+  };
 
   useEffect(()=>{
-    const params={};
-    if(rechargeCurrentPage>1) params.rechargePage=rechargeCurrentPage.toString();
-    if(rechargeDateFilter)    params.rechargeDate=rechargeDateFilter;
-    setSearchParams(params);
-    fetchRecharges(rechargeCurrentPage,rechargeDateFilter);
-  },[rechargeCurrentPage,rechargeDateFilter,setSearchParams,fetchRecharges]);
+    const socket = createAppSocket();
+    socket.on("connect", () => {
+      console.log("Socket admin connecté :", socket.id);
+    });
+    const onNewNotification = (data) => {
+      console.log("Socket new_notification reçue :", data);
+      if(data.type==="recharge"||data.type==="demande_retrait") callbacksRef.current.fetchRecharges();
+      if(data.type==="demande_technicien") callbacksRef.current.fetchDemandeTech();
+      if(data.type==="inscription") callbacksRef.current.fetchPartners();
+    };
+    const onCommissionRules = () => {
+      console.log("Socket commission_rules_update reçue");
+      callbacksRef.current.fetchCommissions();
+      callbacksRef.current.fetchStats();
+    };
+    const onAdminUpdate = (data) => {
+      console.log("Socket admin_dashboard_update reçue :", data);
+      callbacksRef.current.fetchPartners();
+      callbacksRef.current.fetchStats();
+      callbacksRef.current.fetchRecharges();
+      callbacksRef.current.fetchCommissions();
+    };
+    const onPartnerCreated = (partner) => {
+      console.log("Socket partners:created reçue :", partner);
+      if(!partner) return;
+      callbacksRef.current.setPartners(prev => {
+        if(prev.find(p=>p.id===partner.id)) return prev;
+        return [partner, ...prev];
+      });
+    };
+    const onPartnerUpdated = (partner) => {
+      console.log("Socket partners:updated reçue :", partner);
+      if(!partner) return;
+      callbacksRef.current.setPartners(prev => prev.map(p=>p.id===partner.id?partner:p));
+    };
 
-  useEffect(()=>{if(activePage==="commissions")fetchCommissions();},[activePage,fetchCommissions]);
+    socket.on("new_notification", onNewNotification);
+    socket.on("commission_rules_update", onCommissionRules);
+    socket.on("admin_dashboard_update", onAdminUpdate);
+    socket.on("partners:created", onPartnerCreated);
+    socket.on("partners:updated", onPartnerUpdated);
+
+    return ()=>{
+      socket.off("new_notification", onNewNotification);
+      socket.off("commission_rules_update", onCommissionRules);
+      socket.off("admin_dashboard_update", onAdminUpdate);
+      socket.off("partners:created", onPartnerCreated);
+      socket.off("partners:updated", onPartnerUpdated);
+      socket.disconnect();
+    };
+  },[]);
+
+  useEffect(() => {
+    if (activePage !== "dashboard") return undefined;
+    const interval = window.setInterval(fetchStats, 10000);
+    return () => window.clearInterval(interval);
+  }, [activePage, fetchStats]);
+
+  useEffect(()=>{fetchPartners();fetchStats();fetchDecoders();},[fetchPartners,fetchStats,fetchDecoders]);
+
+  useEffect(() => {
+    fetchRecharges(rechargeCurrentPage, rechargeDateFilter);
+  }, [rechargeCurrentPage, rechargeDateFilter, fetchRecharges]);
+
+  useEffect(() => {
+    const page = searchParams.get("page") || "dashboard";
+    const rechargePage = Math.max(1, parseInt(searchParams.get("rechargePage") || "1", 10) || 1);
+    const rechargeDate = searchParams.get("rechargeDate") || "";
+    if (page !== activePage) setActivePage(page);
+    if (rechargePage !== rechargeCurrentPage) setRechargeCurrentPage(rechargePage);
+    if (rechargeDate !== rechargeDateFilter) {
+      setRechargeDateFilter(rechargeDate);
+      setRechargeSearchDate(rechargeDate);
+    }
+  }, [searchParams]);
+
+  useEffect(()=>{if(activePage==="dashboard"||activePage==="commissions"||activePage==="formules")fetchCommissions();},[activePage,fetchCommissions]);
   useEffect(()=>{if(activePage==="techniciens")fetchDemandeTech(techPage);},[activePage,techPage,fetchDemandeTech]);
+  useEffect(()=>{if(activePage==="settings")fetchSettings();},[activePage,fetchSettings]);
 
-  // ══ ACTIONS ════════════════════════════════════════════════════════════════
+  // "" ACTIONS """"""""""""""""""""""""""""""""""""""""""""""""""""""""""""""""
 
-  const approvePartner = async(id)=>{await axios.put(`${API}/partners/${id}/approve`,{},authHdr());fetchPartners();};
-  const rejectPartner  = async(id)=>{await axios.put(`${API}/partners/${id}/reject`,{},authHdr()); fetchPartners();};
-  const deletePartner  = async(id)=>{if(!window.confirm("Supprimer ?"))return;await axios.delete(`${API}/partners/${id}`,authHdr());fetchPartners();};
+  const approvePartner = async(id)=>{
+    try {
+      await axios.put(`${API}/partners/${id}/approve`,{},authHdr());
+      Swal.fire({ title: "Validé !", text: "Le compte partenaire a été validé.", icon: "success", confirmButtonColor: "#e53935" });
+      fetchPartners();
+    } catch(e) {
+      Swal.fire({ title: "Erreur", text: e.response?.data?.error || "Erreur de validation", icon: "error", confirmButtonColor: "#e53935" });
+    }
+  };
+  const rejectPartner  = async(id)=>{
+    try {
+      await axios.put(`${API}/partners/${id}/reject`,{},authHdr());
+      Swal.fire({ title: "Rejeté !", text: "La demande a été rejetée.", icon: "success", confirmButtonColor: "#e53935" });
+      fetchPartners();
+    } catch(e) {
+      Swal.fire({ title: "Erreur", text: e.response?.data?.error || "Erreur", icon: "error", confirmButtonColor: "#e53935" });
+    }
+  };
+  const deletePartner  = async(id)=>{
+    const res = await Swal.fire({
+      title: "Supprimer ?",
+      text: "Voulez-vous supprimer ce partenaire ?",
+      icon: "warning",
+      showCancelButton: true,
+      confirmButtonText: "Oui, supprimer",
+      cancelButtonText: "Annuler",
+      confirmButtonColor: "#e53935",
+      cancelButtonColor: "#9ca3af"
+    });
+    if(!res.isConfirmed) return;
+    try {
+      await axios.delete(`${API}/partners/${id}`,authHdr());
+      Swal.fire({ title: "Supprimé !", text: "Le partenaire a été supprimé.", icon: "success", confirmButtonColor: "#e53935" });
+      fetchPartners();
+    } catch(e) {
+      Swal.fire({ title: "Erreur", text: e.response?.data?.error || "Impossible de supprimer", icon: "error", confirmButtonColor: "#e53935" });
+    }
+  };
   const addPartner     = async()=>{
-    try{await axios.post(`${API}/partners`,newPartner,authHdr());setShowAddModal(false);setNewPartner(emptyPartner);fetchPartners();}
-    catch(e){alert("Erreur : "+e.message);}
+    try{
+      await axios.post(`${API}/partners`,newPartner,authHdr());
+      setShowAddModal(false);
+      setNewPartner(emptyPartner);
+      Swal.fire({ title: "Ajouté !", text: "Le partenaire a été ajouté avec succès.", icon: "success", confirmButtonColor: "#e53935" });
+      fetchPartners();
+    } catch(e){
+      Swal.fire({ title: "Erreur", text: e.response?.data?.error || e.message, icon: "error", confirmButtonColor: "#e53935" });
+    }
   };
   const openEdit = (p)=>{setEditId(p.id);setEditData({name:p.name,email:p.email,structure:p.structure,pays:p.pays,ville:p.ville,quartier:p.quartier,telephone:p.telephone,codePromo:p.codePromo,password:""});setShowEditModal(true);};
   const saveEdit = async()=>{
@@ -367,26 +645,80 @@ export default function AdminDashboard() {
       if(!payload.password?.trim()) delete payload.password;
       await axios.put(`${API}/partners/${editId}`,payload,authHdr());
       setShowEditModal(false);
+      Swal.fire({ title: "Modifié !", text: "Informations mises à jour.", icon: "success", confirmButtonColor: "#e53935" });
       fetchPartners();
     }catch(e){
-      alert(e.response?.data?.error || "Erreur lors de la modification");
+      Swal.fire({ title: "Erreur", text: e.response?.data?.error || "Erreur lors de la modification", icon: "error", confirmButtonColor: "#e53935" });
     }
   };
   const creditWallet = async(id)=>{
-    const amount=prompt("Montant à créditer (FCFA) :");if(!amount||isNaN(amount)||Number(amount)<=0)return alert("Montant invalide");
-    try{const res=await axios.post(`${API}/partners/${id}/credit`,{amount:Number(amount)},authHdr());alert(`Crédité ! Solde : ${res.data.wallet_balance} FCFA`);fetchPartners();}
-    catch(e){alert("Erreur crédit");}
+    const { value: amount } = await Swal.fire({
+      title: "Créditer le portefeuille",
+      input: "number",
+      inputLabel: "Montant à créditer (FCFA) :",
+      inputPlaceholder: "Ex: 5000",
+      showCancelButton: true,
+      confirmButtonText: "Créditer",
+      cancelButtonText: "Annuler",
+      confirmButtonColor: "#e53935",
+      cancelButtonColor: "#9ca3af",
+      inputValidator: (value) => {
+        if (!value || isNaN(value) || Number(value) <= 0) {
+          return "Veuillez entrer un montant valide supérieur à 0";
+        }
+      }
+    });
+    if(!amount) return;
+    try{
+      const res=await axios.post(`${API}/partners/${id}/credit`,{amount:Number(amount)},authHdr());
+      Swal.fire({ title: "Crédité !", text: `Le portefeuille a été crédité. Nouveau solde : ${res.data.wallet_balance.toLocaleString()} FCFA`, icon: "success", confirmButtonColor: "#e53935" });
+      fetchPartners();
+    }catch(e){
+      const msg=e.response?.data?.message||e.response?.data?.error||e.message||"Erreur crédit";
+      Swal.fire({ title: "Erreur", text: `Erreur crédit : ${msg}`, icon: "error", confirmButtonColor: "#e53935" });
+    }
   };
 
   const validerRecharge = async(id)=>{
-    if(!window.confirm("Valider cette demande ?"))return;
-    try{await axios.post(`${API}/admin/recharges/${id}/valider`,{},authHdr());alert("Recharge validée !");fetchRecharges();fetchPartners();}
-    catch(e){alert(e.response?.data?.error||"Erreur");}
+    const res = await Swal.fire({
+      title: "Valider cette demande ?",
+      text: "Voulez-vous valider cette demande de recharge ?",
+      icon: "question",
+      showCancelButton: true,
+      confirmButtonText: "Oui, valider",
+      cancelButtonText: "Annuler",
+      confirmButtonColor: "#e53935",
+      cancelButtonColor: "#9ca3af"
+    });
+    if(!res.isConfirmed) return;
+    try{
+      await axios.post(`${API}/admin/recharges/${id}/valider`,{},authHdr());
+      Swal.fire({ title: "Succès !", text: "Recharge validée !", icon: "success", confirmButtonColor: "#e53935" });
+      fetchRecharges();
+      fetchPartners();
+    } catch(e){
+      Swal.fire({ title: "Erreur", text: e.response?.data?.error||"Erreur", icon: "error", confirmButtonColor: "#e53935" });
+    }
   };
   const rejeterRecharge = async(id)=>{
-    if(!window.confirm("Rejeter ?"))return;
-    try{await axios.post(`${API}/admin/recharges/${id}/rejeter`,{},authHdr());fetchRecharges();}
-    catch(e){alert("Erreur");}
+    const res = await Swal.fire({
+      title: "Rejeter cette demande ?",
+      text: "Voulez-vous rejeter cette demande de recharge ?",
+      icon: "warning",
+      showCancelButton: true,
+      confirmButtonText: "Oui, rejeter",
+      cancelButtonText: "Annuler",
+      confirmButtonColor: "#e53935",
+      cancelButtonColor: "#9ca3af"
+    });
+    if(!res.isConfirmed) return;
+    try{
+      await axios.post(`${API}/admin/recharges/${id}/rejeter`,{},authHdr());
+      Swal.fire({ title: "Rejetée !", text: "La recharge a été rejetée.", icon: "success", confirmButtonColor: "#e53935" });
+      fetchRecharges();
+    } catch{
+      Swal.fire({ title: "Erreur", text: "Erreur lors du rejet", icon: "error", confirmButtonColor: "#e53935" });
+    }
   };
 
   const addDecoder = async()=>{
@@ -401,18 +733,29 @@ export default function AdminDashboard() {
     if(isExpired()){navigate("/LoginForm");return;}
     setTogglingGlobal(true);
     try{await axios.post(`${API}/admin/balance-toggle`,{enabled:!balanceGlobal},authHdr());await fetchCommissions();}
-    catch(e){alert("Erreur : "+(e.response?.data?.error||e.message));}
+    catch(e){Swal.fire({ title: "Erreur", text: "Erreur : "+(e.response?.data?.error||e.message), icon: "error", confirmButtonColor: "#e53935" });}
     finally{setTogglingGlobal(false);}
   };
 
   const togglePartnerBalance = async(partner)=>{
     if(isExpired()){navigate("/LoginForm");return;}
-    if(!window.confirm(`${partner.balance_actif?"Désactiver":"Activer"} le retrait pour ${partner.prenom} ${partner.name} ?`))return;
+    const confirmResult = await Swal.fire({
+      title: "Confirmer l'action",
+      text: `${partner.balance_actif?"Désactiver":"Activer"} le retrait pour ${partner.prenom} ${partner.name} ?`,
+      icon: "warning",
+      showCancelButton: true,
+      confirmButtonColor: "#e53935",
+      cancelButtonColor: "#d33",
+      confirmButtonText: "Oui",
+      cancelButtonText: "Annuler"
+    });
+    if(!confirmResult.isConfirmed) return;
     setTogglingId(partner.id);
     try{
       await axios.post(`${API}/admin/balance-toggle-partner/${partner.id}`,{enabled:!partner.balance_actif},authHdr());
       setCommissionsData(prev=>prev.map(p=>p.id===partner.id?{...p,balance_actif:!p.balance_actif}:p));
-    }catch(e){alert("Erreur : "+(e.response?.data?.error||e.message));}
+      Swal.fire({ title: "Succès !", text: `Retrait ${partner.balance_actif?"désactivé":"activé"} avec succès.`, icon: "success", confirmButtonColor: "#e53935" });
+    }catch(e){Swal.fire({ title: "Erreur", text: "Erreur : "+(e.response?.data?.error||e.message), icon: "error", confirmButtonColor: "#e53935" });}
     finally{setTogglingId(null);}
   };
 
@@ -420,16 +763,15 @@ export default function AdminDashboard() {
     if(isExpired()){navigate("/LoginForm");return;}
     const rule = commissionRules.find(r=>r.formule_code===code);
     const val  = Number(commissionRulesEdit[code]);
-    if(!val||val<=0){alert("Montant de caisse invalide");return;}
+    if(!val||val<=0){Swal.fire({ title: "Erreur", text: "Montant de caisse invalide", icon: "error", confirmButtonColor: "#e53935" });return;}
     setSavingRule(code);
     try{
-      const body = {cashbox_amount:val};
-      const res = await axios.put(`${API}/admin/commission-rules/${code}`,body,authHdr());
+      const res = await axios.post(`${API}/admin/commission-rules/${code}/cashbox`,{type:"add",amount:val},authHdr());
       const updated = res.data?.rule||{...rule,cashbox_amount:Number(rule?.cashbox_amount||0)+val};
       setCommissionRules(prev=>prev.map(r=>r.formule_code===code?{...r,...updated}:r));
       setCommissionRulesEdit(prev=>({...prev,[code]:""}));
-      alert(`Commission ${code} mise à jour à ${val.toLocaleString()} FCFA`);
-    }catch(e){alert("Erreur : "+(e.response?.data?.error||e.message));}
+      Swal.fire({ title: "Succès !", text: `Commission ${code} mise à jour à ${val.toLocaleString()} FCFA`, icon: "success", confirmButtonColor: "#e53935" });
+    }catch(e){Swal.fire({ title: "Erreur", text: "Erreur : "+(e.response?.data?.error||e.message), icon: "error", confirmButtonColor: "#e53935" });}
     finally{setSavingRule(null);}
   };
 
@@ -441,7 +783,33 @@ export default function AdminDashboard() {
     }catch(e){console.error(e);}
   };
 
-  // ✅ Sauvegarder la commission sur abonnement
+  const withdrawCommissionCashbox = async(code)=>{
+    if(isExpired()){navigate("/LoginForm");return;}
+    const val  = Number(commissionRulesEdit[code]);
+    if(!val||val<=0){Swal.fire({ title: "Erreur", text: "Montant de retrait invalide", icon: "error", confirmButtonColor: "#e53935" });return;}
+    setSavingRule(code);
+    try{
+      await axios.post(`${API}/admin/commission-rules/${code}/cashbox`,{type:"withdraw",amount:val},authHdr());
+      setCommissionRulesEdit(prev=>({...prev,[code]:""}));
+      await fetchCommissions();
+      Swal.fire({ title: "Succès !", text: `Retrait de ${val.toLocaleString()} FCFA effectué`, icon: "success", confirmButtonColor: "#e53935" });
+    }catch(e){Swal.fire({ title: "Erreur", text: "Erreur : "+(e.response?.data?.error||e.message), icon: "error", confirmButtonColor: "#e53935" });}
+    finally{setSavingRule(null);}
+  };
+
+  const saveFormulePrice = async(code)=>{
+    const price = Number(formuleEdits[code]);
+    if(!price || price <= 0){Swal.fire({ title: "Erreur", text: "Prix invalide", icon: "error", confirmButtonColor: "#e53935" });return;}
+    setSavingFormule(code);
+    try{
+      await axios.put(`${API}/admin/formules/${code}`,{price},authHdr());
+      await fetchCommissions();
+      Swal.fire({ title: "Succès !", text: "Prix de formule mis à jour", icon: "success", confirmButtonColor: "#e53935" });
+    }catch(e){Swal.fire({ title: "Erreur", text: "Erreur : "+(e.response?.data?.error||e.message), icon: "error", confirmButtonColor: "#e53935" });}
+    finally{setSavingFormule(null);}
+  };
+
+  //  Sauvegarder la commission sur abonnement
  const saveAbonnementCommission = async () => {
   const val = Number(abonnementCommissionEdit);
   if (!val || val < 0) { setAbonnementMsg("Valeur invalide"); return; }
@@ -453,7 +821,7 @@ export default function AdminDashboard() {
       authHdr()
     );
     setAbonnementCommission(val);
-    setAbonnementMsg(`✅ Commission abonnement fixée à ${val.toLocaleString()} FCFA`);
+    setAbonnementMsg(` Commission abonnement fixée à ${val.toLocaleString()} FCFA`);
   } catch (e) {
     setAbonnementMsg("Erreur : " + (e.response?.data?.error || e.message));
   } finally {
@@ -463,19 +831,49 @@ export default function AdminDashboard() {
 
   // Techniciens
   const updateStatutTech = async(id,statut)=>{
-    if(!window.confirm(`Mettre le statut à "${statut}" ?`))return;
+    const confirmResult = await Swal.fire({
+      title: "Confirmer l'action",
+      text: `Mettre le statut à "${statut}" ?`,
+      icon: "question",
+      showCancelButton: true,
+      confirmButtonColor: "#e53935",
+      cancelButtonColor: "#d33",
+      confirmButtonText: "Oui",
+      cancelButtonText: "Annuler"
+    });
+    if(!confirmResult.isConfirmed) return;
     try{await axios.put(`${API}/admin/demandes-technicien/${id}/statut`,{statut},authHdr());fetchDemandeTech(techPage);}
-    catch(e){alert("Erreur");}
+    catch{Swal.fire({ title: "Erreur", text: "Erreur lors de la modification", icon: "error", confirmButtonColor: "#e53935" });}
   };
   const deleteTech = async(id)=>{
-    if(!window.confirm("Supprimer cette demande ?"))return;
+    const confirmResult = await Swal.fire({
+      title: "Confirmer la suppression",
+      text: "Supprimer cette demande ?",
+      icon: "warning",
+      showCancelButton: true,
+      confirmButtonColor: "#e53935",
+      cancelButtonColor: "#d33",
+      confirmButtonText: "Supprimer",
+      cancelButtonText: "Annuler"
+    });
+    if(!confirmResult.isConfirmed) return;
     try{await axios.delete(`${API}/admin/demandes-technicien/${id}`,authHdr());fetchDemandeTech(techPage);}
-    catch(e){alert("Erreur");}
+    catch{Swal.fire({ title: "Erreur", text: "Erreur lors de la suppression", icon: "error", confirmButtonColor: "#e53935" });}
   };
   const cleanupTech = async()=>{
-    if(!window.confirm("Supprimer toutes les demandes traitées (terminées/annulées) ?"))return;
+    const confirmResult = await Swal.fire({
+      title: "Confirmer le nettoyage",
+      text: "Supprimer toutes les demandes traitées (terminées/annulées) ?",
+      icon: "warning",
+      showCancelButton: true,
+      confirmButtonColor: "#e53935",
+      cancelButtonColor: "#d33",
+      confirmButtonText: "Nettoyer",
+      cancelButtonText: "Annuler"
+    });
+    if(!confirmResult.isConfirmed) return;
     try{await axios.delete(`${API}/admin/demandes-technicien-cleanup`,authHdr());fetchDemandeTech(1);}
-    catch(e){alert("Erreur");}
+    catch{Swal.fire({ title: "Erreur", text: "Erreur lors du nettoyage", icon: "error", confirmButtonColor: "#e53935" });}
   };
 
   const filtered   = partners.filter(p=>{const q=search.toLowerCase();return(p.name?.toLowerCase().includes(q)||p.email?.toLowerCase().includes(q))&&(filter==="all"||p.status===filter);});
@@ -483,20 +881,24 @@ export default function AdminDashboard() {
   const approved   = partners.filter(p=>p.status==="approved").length;
   const pending    = partners.filter(p=>p.status==="pending").length;
   const rejected   = partners.filter(p=>p.status==="rejected").length;
-  const totalWallet = partners.reduce((s,p)=>s+(Number(p.wallet_balance)||0),0);
   const totalPages  = Math.ceil(filtered.length/partnersPerPage);
   const paginated   = filtered.slice((currentPage-1)*partnersPerPage,currentPage*partnersPerPage);
+  const commissionsPerPage = 10;
+  const commissionsTotalPages = Math.max(1, Math.ceil(commissionsData.length / commissionsPerPage));
+  const commissionsSafePage = Math.min(commissionsPage, commissionsTotalPages);
+  const paginatedCommissionsData = commissionsData.slice((commissionsSafePage - 1) * commissionsPerPage, commissionsSafePage * commissionsPerPage);
 
-  // ══ RENDERS ════════════════════════════════════════════════════════════════
+  // "" RENDERS """"""""""""""""""""""""""""""""""""""""""""""""""""""""""""""""
 
   const renderDashboard = ()=>(
     <div className="flex flex-col gap-6">
-      <div className="grid grid-cols-2 xl:grid-cols-4 gap-4">
+      <div className="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-5 gap-4">
         <KpiCard label="Partenaires"    value={total}    sub="au total"                color="bg-gray-900 text-white"    icon="partners"/>
         <KpiCard label="Validés"        value={approved} sub={`${pending} en attente`} color="bg-green-600 text-white"   icon="check"/>
         <KpiCard label="Réabonnements"  value={reabonnementTotal} sub="validés"        color="bg-red-600 text-white"     icon="refresh"/>
-        {/* ✅ Carte orange = 6% admin sur tous les réabonnements */}
-        <KpiCard label="Mes gains (6%)" value={`${(adminGains||commissionTotal).toLocaleString()} F`} sub="6% sur réabonnements" color="bg-amber-500 text-white" icon="commission"/>
+        <KpiCard label="Recharges partenaires" value={`${Number(totalAdminRecharges || 0).toLocaleString()} F`} sub="recharges + créditations" color="bg-blue-600 text-white" icon="wallet"/>
+        {/*  Carte orange = 6% admin sur tous les réabonnements */}
+        <KpiCard label={`Mes gains (${Number(adminGainRate || 0).toLocaleString("fr-FR")}%)`} value={`${Number(adminGains || 0).toLocaleString()} F`} sub="taux réglable" color="bg-amber-500 text-white" icon="commission"/>
       </div>
       <div className="grid grid-cols-1 xl:grid-cols-2 gap-5">
         <div className="bg-card rounded-lg shadow-sm border border-border overflow-hidden">
@@ -522,11 +924,54 @@ export default function AdminDashboard() {
           </div>
         </div>
       </div>
+      <div className="bg-card rounded-lg shadow-sm border border-border overflow-hidden">
+        <div className="px-5 pt-5 pb-3 border-b border-border flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+          <div>
+            <p className="text-[11px] text-muted-foreground font-semibold uppercase tracking-widest">Historique journalier</p>
+            <h2 className="text-sm font-bold text-card-foreground mt-0.5">Réabonnements et bonus gagnés</h2>
+          </div>
+          <div className="flex items-center gap-2">
+            <input
+              type="date"
+              value={commissionDate}
+              onChange={(e) => setCommissionDate(e.target.value)}
+              className="px-3 py-1.5 border border-input rounded-lg text-xs bg-background focus:outline-none focus:ring-2 focus:ring-ring"
+            />
+            <button
+              onClick={fetchCommissions}
+              className="flex items-center gap-1 px-3 py-1.5 rounded-lg border border-border text-xs font-semibold text-foreground hover:bg-muted/30 whitespace-nowrap"
+            >
+              <Icon name="refresh" size={13} /> Rechercher
+            </button>
+          </div>
+        </div>
+        <div className="overflow-x-auto">
+          <table className="w-full text-sm">
+            <thead><tr className="bg-muted/50 border-b border-border">{["Date","Partenaire","Abonné","Forfait","Type","Commission","Statut"].map(h=><th key={h} className="px-4 py-3 text-left text-[11px] font-semibold text-muted-foreground uppercase tracking-wide whitespace-nowrap">{h}</th>)}</tr></thead>
+            <tbody>
+              {commissionHistory.length===0
+                ?<tr><td colSpan={7} className="text-center py-10 text-muted-foreground">Aucune opération pour cette date</td></tr>
+                :commissionHistory.slice(0, 8).map((h,i)=>(
+                  <tr key={h.id} className={`hover:bg-muted/30 ${i!==0?"border-t border-border":""}`}>
+                    <td className="px-4 py-3 text-xs text-muted-foreground whitespace-nowrap">{new Date(h.created_at).toLocaleString("fr-FR")}</td>
+                    <td className="px-4 py-3"><p className="font-semibold text-foreground">{h.prenom} {h.name}</p><p className="text-xs text-muted-foreground">{h.structure||""}</p></td>
+                    <td className="px-4 py-3 font-mono text-xs text-muted-foreground">{h.numero_abonne||""}</td>
+                    <td className="px-4 py-3 font-semibold text-foreground whitespace-nowrap">{h.formule_name}</td>
+                    <td className="px-4 py-3 text-muted-foreground whitespace-nowrap">{h.operation_type}</td>
+                    <td className="px-4 py-3 font-bold text-green-700 whitespace-nowrap">{Number(h.commission_amount).toLocaleString()} FCFA</td>
+                    <td className="px-4 py-3"><span className={`px-2 py-0.5 rounded-full text-[11px] font-semibold border ${Number(h.is_bonus)===1?"bg-green-50 text-green-700 border-green-200":"bg-muted text-muted-foreground border-border"}`}>{Number(h.is_bonus)===1?"Bonus":"Base"}</span></td>
+                  </tr>
+                ))
+              }
+            </tbody>
+          </table>
+        </div>
+      </div>
       {/* Derniers partenaires */}
       <div className="bg-card rounded-lg shadow-sm border border-border overflow-hidden">
         <div className="px-5 pt-5 pb-3 border-b border-border flex items-center justify-between">
           <div><p className="text-[11px] text-muted-foreground font-semibold uppercase tracking-widest">Récents</p><h2 className="text-sm font-bold text-card-foreground mt-0.5">Derniers partenaires inscrits</h2></div>
-          <button onClick={()=>setActivePage("partners")} className="text-xs font-semibold text-primary hover:text-primary/80">Voir tout →</button>
+          <button onClick={()=>goAdminPage("partners")} className="text-xs font-semibold text-primary hover:text-primary/80">Voir tout  </button>
         </div>
         <table className="w-full text-sm">
           <thead><tr className="border-b border-border">{["Partenaire","Ville","Code Promo","Portefeuille","Statut"].map(h=><th key={h} className="px-5 py-3 text-left text-[11px] font-semibold text-muted-foreground uppercase tracking-wide">{h}</th>)}</tr></thead>
@@ -534,8 +979,8 @@ export default function AdminDashboard() {
             {partners.slice(0,5).map((p,i)=>(
               <tr key={p.id} className={`hover:bg-muted/30 ${i!==0?"border-t border-border":""}`}>
                 <td className="px-5 py-3"><div className="flex items-center gap-3"><div className="w-8 h-8 rounded-full bg-primary/10 text-primary font-bold text-xs flex items-center justify-center">{(p.name?.[0]||"?").toUpperCase()}</div><div><p className="font-semibold text-card-foreground text-sm">{p.name} {p.prenom}</p><p className="text-xs text-muted-foreground">{p.email}</p></div></div></td>
-                <td className="px-5 py-3 text-muted-foreground">{p.ville||"—"}</td>
-                <td className="px-5 py-3"><span className="px-2 py-0.5 bg-muted text-muted-foreground rounded font-mono text-xs">{p.codePromo||"—"}</span></td>
+                <td className="px-5 py-3 text-muted-foreground">{p.ville||""}</td>
+                <td className="px-5 py-3"><span className="px-2 py-0.5 bg-muted text-muted-foreground rounded font-mono text-xs">{p.codePromo||""}</span></td>
                 <td className="px-5 py-3 font-semibold text-green-700">{(Number(p.wallet_balance)||0).toLocaleString()} FCFA</td>
                 <td className="px-5 py-3"><StatusBadge status={p.status}/></td>
               </tr>
@@ -545,7 +990,7 @@ export default function AdminDashboard() {
         {recharges.filter(r=>r.statut==="en_attente").length>0&&(
           <div className="px-5 py-3 border-t border-border flex items-center justify-between">
             <p className="text-xs text-muted-foreground">{recharges.filter(r=>r.statut==="en_attente").length} recharge(s) en attente</p>
-            <button onClick={()=>setActivePage("recharges")} className="text-xs font-semibold text-amber-700">Voir tout →</button>
+            <button onClick={()=>goAdminPage("recharges")} className="text-xs font-semibold text-amber-700">Voir tout  </button>
           </div>
         )}
       </div>
@@ -559,7 +1004,7 @@ export default function AdminDashboard() {
       <div className="flex flex-col gap-5">
         <CommissionChart commissionsParFormule={statsFormules} isAdmin={true} commissionsAdmin={commissionRules} adminTotal={totalCommissionsAdmin} seuilAdmin={50000} onUpdate={handleCommissionUpdate}/>
 
-        {/* ✅ SECTION COMMISSION ABONNEMENT */}
+        {/*  SECTION COMMISSION ABONNEMENT */}
         <div className="bg-card rounded-lg shadow-sm border border-border overflow-hidden">
           <div className="px-5 pt-5 pb-3 border-b border-border">
             <h2 className="text-sm font-bold text-card-foreground flex items-center gap-2">
@@ -569,7 +1014,6 @@ export default function AdminDashboard() {
             <p className="text-xs text-muted-foreground mt-1">
               Définissez la commission fixe gagnée par un partenaire lorsqu'il effectue un <strong>nouvel abonnement</strong>.
               Cette commission s'additionne à la commission du forfait souscrit.
-              <br/>Exemple : Abonnement Access (5 000 F) → Commission = <strong>{abonnementCommission.toLocaleString()} F + commission du forfait</strong>
             </p>
           </div>
           <div className="p-5">
@@ -599,31 +1043,10 @@ export default function AdminDashboard() {
                   </button>
                 </div>
               </div>
-              {abonnementMsg && <p className={`text-xs mt-2 font-medium ${abonnementMsg.includes("✅")?"text-green-700":"text-red-600"}`}>{abonnementMsg}</p>}
+              {abonnementMsg && <p className={`text-xs mt-2 font-medium ${abonnementMsg.includes("")?"text-green-700":"text-red-600"}`}>{abonnementMsg}</p>}
               {Number(abonnementCommissionEdit)!==abonnementCommission && !abonnementMsg && (
-                <p className="text-xs text-amber-600 mt-2">⚠ Modification non sauvegardée</p>
+                <p className="text-xs text-amber-600 mt-2">a Modification non sauvegardée</p>
               )}
-            </div>
-            {/* Exemple de calcul */}
-            <div className="bg-muted/40 rounded-xl p-4 border border-border">
-              <p className="text-xs font-semibold text-muted-foreground uppercase tracking-wide mb-3">Exemple de calcul</p>
-              <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
-                {[
-                  {formule:"Access",prix:5000,comm:200},
-                  {formule:"Évasion",prix:10500,comm:420},
-                  {formule:"Tout Canal+",prix:28000,comm:1120},
-                ].map(({formule,prix,comm})=>(
-                  <div key={formule} className="bg-card rounded-lg border border-border p-3 text-center">
-                    <p className="text-xs font-semibold text-foreground mb-1">{formule}</p>
-                    <p className="text-[10px] text-muted-foreground">{prix.toLocaleString()} FCFA</p>
-                    <div className="mt-2 pt-2 border-t border-border">
-                      <p className="text-[10px] text-muted-foreground">Commission totale</p>
-                      <p className="text-sm font-bold text-green-700">{(abonnementCommission+comm).toLocaleString()} F</p>
-                      <p className="text-[10px] text-muted-foreground">{abonnementCommission.toLocaleString()} + {comm.toLocaleString()}</p>
-                    </div>
-                  </div>
-                ))}
-              </div>
             </div>
           </div>
         </div>
@@ -631,7 +1054,7 @@ export default function AdminDashboard() {
         {/* Paramétrage des commissions réabonnement */}
         <div className="bg-card rounded-lg shadow-sm border border-border overflow-hidden">
           <div className="px-5 pt-5 pb-3 border-b border-border">
-            <h2 className="text-sm font-bold text-card-foreground">Paramétrage des commissions — Réabonnements</h2>
+            <h2 className="text-sm font-bold text-card-foreground">Paramétrage des commissions  Réabonnements</h2>
             <p className="text-xs text-muted-foreground mt-1">Commission gagnée par le partenaire à chaque réabonnement d'un client sur ce forfait.</p>
           </div>
           <div className="p-5 grid grid-cols-1 md:grid-cols-2 gap-4">
@@ -648,40 +1071,45 @@ export default function AdminDashboard() {
                   <div><span className="block font-semibold text-foreground">{Number(rule.base_progress_count||0)}/{Number(rule.required_base_count||1)}</span>Progression</div>
                   <div><span className="block font-semibold text-foreground">{Number(rule.activation_count||0)}</span>Réab.</div>
                 </div>
+                <div className="mb-3 rounded-lg bg-card border border-border px-3 py-2">
+                  <p className="text-[10px] text-muted-foreground uppercase font-semibold">Caisse actuelle</p>
+                  <p className="text-lg font-bold text-foreground">{Number(rule.cashbox_amount||0).toLocaleString()} FCFA</p>
+                </div>
                 <div className="flex flex-col sm:flex-row gap-2">
                   <input type="number" min="0"
                     value={commissionRulesEdit[rule.formule_code]??""}
                     onChange={e=>setCommissionRulesEdit(prev=>({...prev,[rule.formule_code]:e.target.value}))}
                     className="flex-1 px-3 py-2 border border-input rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-ring bg-background"
-                    placeholder="Alimenter la caisse"/>
+                    placeholder="Montant"/>
                   <button onClick={()=>saveCommissionRule(rule.formule_code)} disabled={savingRule===rule.formule_code}
-                          className="flex items-center justify-center gap-1 px-3 py-2 bg-primary text-primary-foreground text-xs font-semibold rounded-lg disabled:opacity-50 transition-colors whitespace-nowrap">
+                          className="flex items-center justify-center gap-1 px-3 py-2 bg-green-600 text-white text-xs font-semibold rounded-lg disabled:opacity-50 transition-colors whitespace-nowrap">
                     {savingRule===rule.formule_code
                       ?<svg className="animate-spin" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><circle cx="12" cy="12" r="10" strokeOpacity=".25"/><path d="M12 2a10 10 0 0 1 10 10"/></svg>
                       :<Icon name="save" size={13}/>}
-                    Valider
+                    Ajouter
+                  </button>
+                  <button onClick={()=>withdrawCommissionCashbox(rule.formule_code)} disabled={savingRule===rule.formule_code}
+                          className="flex items-center justify-center gap-1 px-3 py-2 bg-red-600 text-white text-xs font-semibold rounded-lg disabled:opacity-50 transition-colors whitespace-nowrap">
+                    <Icon name="x" size={13}/>
+                    Retirer
                   </button>
                 </div>
                 {Number(commissionRulesEdit[rule.formule_code]||0)>0&&(
-                  <p className="text-xs text-amber-600 mt-1">⚠ Non sauvegardé</p>
+                  <p className="text-xs text-amber-600 mt-1">a Non sauvegardé</p>
                 )}
               </div>
             ))}
           </div>
         </div>
 
-        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
-          <KpiCard label="Total commissions partenaires" value={`${totalHisto.toLocaleString()} FCFA`}       color="bg-gray-900 text-white"    icon="commission"/>
-          <KpiCard label="Commissions en attente"        value={`${totalEnAttente.toLocaleString()} FCFA`}  sub="Non encore retirées" color="bg-amber-500 text-white" icon="bell"/>
-          <KpiCard label="Partenaires actifs"            value={commissionsData.length}                      color="bg-green-600 text-white"   icon="partners"/>
-        </div>
-
-        {/* Historique journalier */}
         <div className="bg-card rounded-lg shadow-sm border border-border overflow-hidden">
           <div className="px-5 pt-5 pb-3 border-b border-border flex flex-col sm:flex-row sm:items-end justify-between gap-3">
             <div>
-              <p className="text-[11px] text-muted-foreground font-semibold uppercase tracking-widest">Historique journalier</p>
-              <h2 className="text-sm font-bold text-card-foreground mt-0.5">Réabonnements et bonus gagnés</h2>
+              <p className="text-[11px] text-muted-foreground font-semibold uppercase tracking-widest">Traçabilité caisse</p>
+              <h2 className="text-sm font-bold text-card-foreground mt-0.5">Ajouts, retraits et restes remis à zéro</h2>
+              <p className="text-xs text-muted-foreground mt-1">
+                Ajouté : {Number(cashboxTotals.total_added||0).toLocaleString()} FCFA · Retiré + reste reset : {Number(cashboxTotals.total_removed||0).toLocaleString()} FCFA
+              </p>
             </div>
             <div className="flex items-center gap-2">
               <input type="date" value={commissionDate} onChange={e=>setCommissionDate(e.target.value)}
@@ -693,26 +1121,30 @@ export default function AdminDashboard() {
           </div>
           <div className="overflow-x-auto">
             <table className="w-full text-sm">
-              <thead><tr className="bg-muted/50 border-b border-border">{["Date","Partenaire","Abonné","Forfait","Type","Taux","Commission","Statut"].map(h=><th key={h} className="px-4 py-3 text-left text-[11px] font-semibold text-muted-foreground uppercase tracking-wide whitespace-nowrap">{h}</th>)}</tr></thead>
+              <thead><tr className="bg-muted/50 border-b border-border">{["Date","Formule","Type","Montant","Avant","Après"].map(h=><th key={h} className="px-4 py-3 text-left text-[11px] font-semibold text-muted-foreground uppercase tracking-wide whitespace-nowrap">{h}</th>)}</tr></thead>
               <tbody>
-                {commissionHistory.length===0
-                  ?<tr><td colSpan={8} className="text-center py-10 text-muted-foreground">Aucune opération pour cette date</td></tr>
-                  :commissionHistory.map((h,i)=>(
-                    <tr key={h.id} className={`hover:bg-muted/30 ${i!==0?"border-t border-border":""}`}>
-                      <td className="px-4 py-3 text-xs text-muted-foreground whitespace-nowrap">{new Date(h.created_at).toLocaleString("fr-FR")}</td>
-                      <td className="px-4 py-3"><p className="font-semibold text-foreground">{h.prenom} {h.name}</p><p className="text-xs text-muted-foreground">{h.structure||"—"}</p></td>
-                      <td className="px-4 py-3 font-mono text-xs text-muted-foreground">{h.numero_abonne||"—"}</td>
-                      <td className="px-4 py-3 font-semibold text-foreground whitespace-nowrap">{h.formule_name}</td>
-                      <td className="px-4 py-3 text-muted-foreground whitespace-nowrap">{h.operation_type}</td>
-                      <td className="px-4 py-3 font-bold text-foreground">{Number(h.rate_applied).toLocaleString("fr-FR")}%</td>
-                      <td className="px-4 py-3 font-bold text-green-700 whitespace-nowrap">{Number(h.commission_amount).toLocaleString()} FCFA</td>
-                      <td className="px-4 py-3"><span className={`px-2 py-0.5 rounded-full text-[11px] font-semibold border ${Number(h.is_bonus)===1?"bg-green-50 text-green-700 border-green-200":"bg-muted text-muted-foreground border-border"}`}>{Number(h.is_bonus)===1?"Bonus":"Base"}</span></td>
+                {cashboxHistory.length===0
+                  ?<tr><td colSpan={7} className="text-center py-10 text-muted-foreground">Aucun mouvement de caisse pour cette date</td></tr>
+                  :cashboxHistory.map((m,i)=>(
+                    <tr key={m.id} className={`hover:bg-muted/30 ${i!==0?"border-t border-border":""}`}>
+                      <td className="px-4 py-3 text-xs text-muted-foreground whitespace-nowrap">{new Date(m.created_at).toLocaleString("fr-FR")}</td>
+                      <td className="px-4 py-3"><p className="font-semibold text-foreground">{m.formule_name}</p><p className="text-xs text-muted-foreground">{m.formule_code}</p></td>
+                      <td className="px-4 py-3"><span className={`px-2 py-0.5 rounded-full text-[11px] font-semibold border ${m.movement_type==="add"?"bg-green-50 text-green-700 border-green-200":"bg-red-50 text-red-600 border-red-200"}`}>{m.movement_type==="add"?"Ajout":m.movement_type==="reset"?"Reset":"Retrait"}</span></td>
+                      <td className="px-4 py-3 font-bold text-foreground whitespace-nowrap">{Number(m.amount||0).toLocaleString()} FCFA</td>
+                      <td className="px-4 py-3 text-muted-foreground whitespace-nowrap">{Number(m.balance_before||0).toLocaleString()} FCFA</td>
+                      <td className="px-4 py-3 text-muted-foreground whitespace-nowrap">{Number(m.balance_after||0).toLocaleString()} FCFA</td>
                     </tr>
                   ))
                 }
               </tbody>
             </table>
           </div>
+        </div>
+
+        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
+          <KpiCard label="Total commissions partenaires" value={`${totalHisto.toLocaleString()} FCFA`}       color="bg-gray-900 text-white"    icon="commission"/>
+          <KpiCard label="Commissions en attente"        value={`${totalEnAttente.toLocaleString()} FCFA`}  sub="Non encore retirées" color="bg-amber-500 text-white" icon="bell"/>
+          <KpiCard label="Partenaires actifs"            value={commissionsData.length}                      color="bg-green-600 text-white"   icon="partners"/>
         </div>
 
         {/* Toggle global balance */}
@@ -723,7 +1155,7 @@ export default function AdminDashboard() {
               <p className="text-xs text-muted-foreground mt-1">{"Activation manuelle par l'admin. Le global ouvre ou ferme le paiement pour tous."}</p>
             </div>
             <div className="flex items-center gap-3">
-              <span className={`text-xs font-semibold px-3 py-1 rounded-full ${balanceGlobal?"bg-green-100 text-green-700":"bg-muted text-muted-foreground"}`}>{balanceGlobal?"✅ Activée":"🔒 Désactivée"}</span>
+              <span className={`text-xs font-semibold px-3 py-1 rounded-full ${balanceGlobal?"bg-green-100 text-green-700":"bg-muted text-muted-foreground"}`}>{balanceGlobal?"Activée":"Désactivée"}</span>
               <Toggle checked={balanceGlobal} onChange={toggleBalanceGlobal} loading={togglingGlobal}/>
             </div>
           </div>
@@ -737,16 +1169,16 @@ export default function AdminDashboard() {
           </div>
           <div className="overflow-x-auto">
             <table className="w-full text-sm">
-              <thead><tr className="bg-muted/50 border-b border-border">{["Partenaire","Structure","Commissions en attente","Total historique","Portefeuille","Retrait actif"].map(h=><th key={h} className="px-4 py-3 text-left text-[11px] font-semibold text-muted-foreground uppercase tracking-wide whitespace-nowrap">{h}</th>)}</tr></thead>
+              <thead><tr className="bg-muted/50 border-b border-border">{["N","Partenaire","Structure","Commissions en attente","Total historique","Portefeuille","Retrait actif"].map(h=><th key={h} className="px-4 py-3 text-left text-[11px] font-semibold text-muted-foreground uppercase tracking-wide whitespace-nowrap">{h}</th>)}</tr></thead>
               <tbody>
                 {loadingCommissions
-                  ?<tr><td colSpan={6} className="text-center py-12 text-muted-foreground">Chargement…</td></tr>
+                  ?<tr><td colSpan={7} className="text-center py-12 text-muted-foreground">Chargement⬦</td></tr>
                   :commissionsData.length===0
-                    ?<tr><td colSpan={6} className="text-center py-12 text-muted-foreground">Aucun partenaire</td></tr>
-                    :commissionsData.map((p,i)=>(
+                    ?<tr><td colSpan={7} className="text-center py-12 text-muted-foreground">Aucun partenaire</td></tr>
+                    :paginatedCommissionsData.map((p,i)=>(
                       <tr key={p.id} className={`hover:bg-muted/30 ${i!==0?"border-t border-border":""}`}>
-                        <td className="px-4 py-3"><div className="flex items-center gap-3"><div className="w-8 h-8 rounded-full bg-amber-100 text-amber-700 font-bold text-xs flex items-center justify-center">{(p.name?.[0]||"?").toUpperCase()}</div><p className="font-semibold text-foreground">{p.prenom} {p.name}</p></div></td>
-                        <td className="px-4 py-3 text-muted-foreground text-xs">{p.structure||"—"}</td>
+                        <td className="px-4 py-3 text-xs font-bold text-muted-foreground">{(commissionsSafePage - 1) * commissionsPerPage + i + 1}</td><td className="px-4 py-3"><div className="flex items-center gap-3"><div className="w-8 h-8 rounded-full bg-amber-100 text-amber-700 font-bold text-xs flex items-center justify-center">{(p.name?.[0]||"?").toUpperCase()}</div><p className="font-semibold text-foreground">{p.prenom} {p.name}</p></div></td>
+                        <td className="px-4 py-3 text-muted-foreground text-xs">{p.structure||""}</td>
                         <td className="px-4 py-3 font-bold text-amber-600">{Number(p.commissions_en_attente||0).toLocaleString()} FCFA</td>
                         <td className="px-4 py-3 font-semibold text-foreground">{Number(p.commissions_totales||0).toLocaleString()} FCFA</td>
                         <td className="px-4 py-3 font-semibold text-green-700">{Number(p.wallet_balance||0).toLocaleString()} FCFA</td>
@@ -762,6 +1194,7 @@ export default function AdminDashboard() {
               </tbody>
             </table>
           </div>
+          <PaginationBar currentPage={commissionsSafePage} totalPages={commissionsTotalPages} onPageChange={setCommissionsPage}/>
         </div>
       </div>
     );
@@ -769,8 +1202,14 @@ export default function AdminDashboard() {
 
   const renderPartners = ()=>(
     <div className="flex flex-col gap-5">
+      <div className="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-4 gap-4">
+        <KpiCard label="Total partenaires" value={total} color="bg-gray-900 text-white" icon="partners"/>
+        <KpiCard label="Valides" value={approved} color="bg-green-600 text-white" icon="check"/>
+        <KpiCard label="En attente" value={pending} color="bg-amber-500 text-white" icon="bell"/>
+        <KpiCard label="Rejetes" value={rejected} color="bg-red-600 text-white" icon="x"/>
+      </div>
       <div className="flex flex-wrap items-center gap-3">
-        <div className="relative flex-1 min-w-52"><Icon name="search" size={15} className="absolute left-3 top-1/2 -translate-y-1/2 text-muted-foreground"/><input type="text" placeholder="Rechercher un partenaire…" value={search} onChange={e=>{setSearch(e.target.value);setCurrentPage(1);}} className="w-full pl-9 pr-4 py-2.5 rounded-lg border border-input text-sm focus:outline-none focus:ring-2 focus:ring-ring bg-background text-foreground"/></div>
+        <div className="relative flex-1 min-w-52"><Icon name="search" size={15} className="absolute left-3 top-1/2 -translate-y-1/2 text-muted-foreground"/><input type="text" placeholder="Rechercher un partenaire⬦" value={search} onChange={e=>{setSearch(e.target.value);setCurrentPage(1);}} className="w-full pl-9 pr-4 py-2.5 rounded-lg border border-input text-sm focus:outline-none focus:ring-2 focus:ring-ring bg-background text-foreground"/></div>
         <select value={filter} onChange={e=>{setFilter(e.target.value);setCurrentPage(1);}} className="px-4 py-2.5 rounded-lg border border-input text-sm bg-background text-foreground focus:outline-none focus:ring-2 focus:ring-ring">
           <option value="all">Tous les statuts</option><option value="approved">Validés</option><option value="pending">En attente</option><option value="rejected">Rejetés</option>
         </select>
@@ -779,17 +1218,18 @@ export default function AdminDashboard() {
       <div className="bg-card rounded-lg shadow-sm border border-border overflow-hidden">
         <div className="overflow-x-auto">
           <table className="w-full text-sm">
-            <thead><tr className="border-b border-border bg-muted/30">{["Partenaire","Structure","Localisation","Téléphone","Code Promo","Portefeuille","Statut","Actions"].map(h=><th key={h} className="px-4 py-3 text-left text-[11px] font-semibold text-muted-foreground uppercase tracking-wide whitespace-nowrap">{h}</th>)}</tr></thead>
+            <thead><tr className="border-b border-border bg-muted/30">{["N","Partenaire","Structure","Localisation","Date Inscription","Téléphone","Code Promo","Portefeuille","Statut","Actions"].map(h=><th key={h} className="px-4 py-3 text-left text-[11px] font-semibold text-muted-foreground uppercase tracking-wide whitespace-nowrap">{h}</th>)}</tr></thead>
             <tbody>
-              {loading?<tr><td colSpan={8} className="text-center py-12 text-muted-foreground">Chargement…</td></tr>
-               :paginated.length===0?<tr><td colSpan={8} className="text-center py-12 text-muted-foreground">Aucun partenaire trouvé</td></tr>
+              {loading?<tr><td colSpan={10} className="text-center py-12 text-muted-foreground">Chargement⬦</td></tr>
+               :paginated.length===0?<tr><td colSpan={10} className="text-center py-12 text-muted-foreground">Aucun partenaire trouvé</td></tr>
                :paginated.map((p,i)=>(
                 <tr key={p.id} className={`hover:bg-muted/30 ${i!==0?"border-t border-border":""}`}>
-                  <td className="px-4 py-3"><div className="flex items-center gap-3">{p.photo_url?<img src={serverUrl(p.photo_url)} alt={p.name} className="w-8 h-8 rounded-full object-cover"/>:<div className="w-8 h-8 rounded-full bg-primary/10 text-primary font-bold text-xs flex items-center justify-center">{(p.name?.[0]||"?").toUpperCase()}</div>}<div><p className="font-semibold text-foreground">{p.name} {p.prenom}</p><p className="text-xs text-muted-foreground">{p.email}</p></div></div></td>
-                  <td className="px-4 py-3 text-muted-foreground whitespace-nowrap">{p.structure||"—"}</td>
-                  <td className="px-4 py-3 text-muted-foreground whitespace-nowrap">{[p.ville,p.pays].filter(Boolean).join(", ")||"—"}</td>
-                  <td className="px-4 py-3 text-muted-foreground whitespace-nowrap">{p.telephone||"—"}</td>
-                  <td className="px-4 py-3"><span className="px-2 py-0.5 bg-muted text-muted-foreground rounded font-mono text-xs">{p.codePromo||"—"}</span></td>
+                  <td className="px-4 py-3 text-xs font-bold text-muted-foreground">{(currentPage - 1) * partnersPerPage + i + 1}</td><td className="px-4 py-3"><div className="flex items-center gap-3">{p.photo_url?<img src={serverUrl(p.photo_url)} alt={p.name} className="w-8 h-8 rounded-full object-cover"/>:<div className="w-8 h-8 rounded-full bg-primary/10 text-primary font-bold text-xs flex items-center justify-center">{(p.name?.[0]||"?").toUpperCase()}</div>}<div><p className="font-semibold text-foreground">{p.name} {p.prenom}</p><p className="text-xs text-muted-foreground">{p.email}</p></div></div></td>
+                  <td className="px-4 py-3 text-muted-foreground whitespace-nowrap">{p.structure||""}</td>
+                  <td className="px-4 py-3 text-muted-foreground whitespace-nowrap">{[p.ville,p.pays].filter(Boolean).join(", ")||""}</td>
+                  <td className="px-4 py-3 text-muted-foreground whitespace-nowrap">{p.created_at ? fmtDateTime(p.created_at) : ""}</td>
+                  <td className="px-4 py-3 text-muted-foreground whitespace-nowrap">{p.telephone||""}</td>
+                  <td className="px-4 py-3"><span className="px-2 py-0.5 bg-muted text-muted-foreground rounded font-mono text-xs">{p.codePromo||""}</span></td>
                   <td className="px-4 py-3 font-semibold text-green-700 whitespace-nowrap">{(Number(p.wallet_balance)||0).toLocaleString()} FCFA</td>
                   <td className="px-4 py-3"><StatusBadge status={p.status}/></td>
                   <td className="px-4 py-3"><div className="flex items-center gap-1.5 flex-wrap"><ActionBtn onClick={()=>approvePartner(p.id)} color="green" icon="check" title="Valider"/><ActionBtn onClick={()=>rejectPartner(p.id)} color="red" icon="x" title="Rejeter"/><ActionBtn onClick={()=>openEdit(p)} color="blue" icon="edit" title="Modifier"/><ActionBtn onClick={()=>deletePartner(p.id)} color="gray" icon="trash" title="Supprimer"/><ActionBtn onClick={()=>creditWallet(p.id)} color="purple" icon="creditcard" label="Crédit"/></div></td>
@@ -805,14 +1245,16 @@ export default function AdminDashboard() {
 
   const renderStats = ()=>(
     <div className="flex flex-col gap-5">
-      <div className="grid grid-cols-2 xl:grid-cols-4 gap-4">
-        <KpiCard label="Total partenaires" value={total}    color="bg-gray-900 text-white"  icon="partners"/>
-        <KpiCard label="Validés"           value={approved} color="bg-green-600 text-white" icon="check"/>
-        <KpiCard label="En attente"        value={pending}  color="bg-amber-500 text-white" icon="bell"/>
-        <KpiCard label="Rejetés"           value={rejected} color="bg-red-600 text-white"   icon="x"/>
+      <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+        <div className="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-4 gap-4 flex-1">
+          <KpiCard label="Reabonnements valides" value={reabonnementTotal} sub="operations confirmees" color="bg-green-600 text-white" icon="refresh"/>
+        </div>
+        <button onClick={downloadOperationsReport} className="flex items-center justify-center gap-2 px-4 py-3 bg-primary text-primary-foreground text-sm font-semibold rounded-lg hover:bg-primary/90 active:scale-95 transition-all">
+          <Icon name="save" size={15}/> Tlcharger Excel
+        </button>
       </div>
       <div className="bg-card rounded-lg shadow-sm border border-border overflow-hidden">
-        <div className="px-5 pt-5 pb-2 border-b border-border"><p className="text-[11px] text-muted-foreground font-semibold uppercase tracking-widest">Évolution</p><h2 className="text-sm font-bold text-card-foreground mt-0.5">Abonnements mensuels</h2></div>
+        <div className="px-5 pt-5 pb-2 border-b border-border"><p className="text-[11px] text-muted-foreground font-semibold uppercase tracking-widest">0volution</p><h2 className="text-sm font-bold text-card-foreground mt-0.5">Abonnements mensuels</h2></div>
         <div className="px-4 pb-6 pt-3">
           <ResponsiveContainer width="100%" height={300}>
             <LineChart data={chartData} margin={{top:10,right:20,left:0,bottom:10}}>
@@ -825,22 +1267,32 @@ export default function AdminDashboard() {
     </div>
   );
 
-  const renderWallets = ()=>(
+  const renderFormules = ()=>(
     <div className="flex flex-col gap-5">
-      <KpiCard label="Total portefeuilles" value={`${totalWallet.toLocaleString()} FCFA`} sub={`${approved} partenaires validés`} color="bg-green-600 text-white" icon="wallet"/>
       <div className="bg-card rounded-lg shadow-sm border border-border overflow-hidden">
-        <div className="px-5 pt-5 pb-3 border-b border-border"><p className="text-[11px] text-muted-foreground font-semibold uppercase tracking-widest">Soldes</p><h2 className="text-sm font-bold text-card-foreground mt-0.5">Portefeuilles partenaires</h2></div>
+        <div className="px-5 pt-5 pb-3 border-b border-border">
+          <p className="text-[11px] text-muted-foreground font-semibold uppercase tracking-widest">Tarifs</p>
+          <h2 className="text-sm font-bold text-card-foreground mt-0.5">Prix des formules et options</h2>
+        </div>
         <div className="overflow-x-auto">
           <table className="w-full text-sm">
-            <thead><tr className="border-b border-border bg-muted/30">{["Partenaire","Code Promo","Statut","Solde","Action"].map(h=><th key={h} className="px-5 py-3 text-left text-[11px] font-semibold text-muted-foreground uppercase tracking-wide">{h}</th>)}</tr></thead>
+            <thead><tr className="bg-muted/50 border-b border-border">{["Formule","Type","Prix actuel","Nouveau prix","Action"].map(h=><th key={h} className="px-4 py-3 text-left text-[11px] font-semibold text-muted-foreground uppercase tracking-wide whitespace-nowrap">{h}</th>)}</tr></thead>
             <tbody>
-              {partners.map((p,i)=>(
-                <tr key={p.id} className={`hover:bg-muted/30 ${i!==0?"border-t border-border":""}`}>
-                  <td className="px-5 py-3"><div className="flex items-center gap-3"><div className="w-8 h-8 rounded-full bg-green-100 text-green-700 font-bold text-xs flex items-center justify-center">{(p.name?.[0]||"?").toUpperCase()}</div><div><p className="font-semibold text-foreground">{p.name} {p.prenom}</p><p className="text-xs text-muted-foreground">{p.email}</p></div></div></td>
-                  <td className="px-5 py-3"><span className="px-2 py-0.5 bg-muted text-muted-foreground rounded font-mono text-xs">{p.codePromo||"—"}</span></td>
-                  <td className="px-5 py-3"><StatusBadge status={p.status}/></td>
-                  <td className="px-5 py-3"><span className="text-lg font-bold text-green-700">{(Number(p.wallet_balance)||0).toLocaleString()}</span><span className="text-xs text-muted-foreground ml-1">FCFA</span></td>
-                  <td className="px-5 py-3"><ActionBtn onClick={()=>creditWallet(p.id)} color="green" icon="creditcard" label="Créditer"/></td>
+              {formules.map(f=>(
+                <tr key={f.code} className="border-t border-border hover:bg-muted/30">
+                  <td className="px-4 py-3"><p className="font-semibold text-foreground">{f.name}</p><p className="text-xs text-muted-foreground">{f.code}</p></td>
+                  <td className="px-4 py-3 text-muted-foreground">{f.type}</td>
+                  <td className="px-4 py-3 font-bold text-foreground">{Number(f.price||0).toLocaleString()} FCFA</td>
+                  <td className="px-4 py-3">
+                    <input type="number" min="1" value={formuleEdits[f.code]??""} onChange={e=>setFormuleEdits(prev=>({...prev,[f.code]:e.target.value}))}
+                      className="w-36 px-3 py-2 border border-input rounded-lg text-sm bg-background focus:outline-none focus:ring-2 focus:ring-ring"/>
+                  </td>
+                  <td className="px-4 py-3">
+                    <button onClick={()=>saveFormulePrice(f.code)} disabled={savingFormule===f.code}
+                      className="flex items-center gap-1.5 px-3 py-2 bg-primary text-primary-foreground text-xs font-semibold rounded-lg disabled:opacity-50">
+                      <Icon name="save" size={13}/> Enregistrer
+                    </button>
+                  </td>
                 </tr>
               ))}
             </tbody>
@@ -850,10 +1302,116 @@ export default function AdminDashboard() {
     </div>
   );
 
+  const renderSettings = () => (
+    <div className="flex flex-col gap-6">
+      <div className="bg-card rounded-lg shadow-sm border border-border overflow-hidden">
+        <div className="px-5 pt-5 pb-3 border-b border-border">
+          <h2 className="text-sm font-bold text-card-foreground flex items-center gap-2">
+            <Icon name="settings" size={15} className="text-primary"/>
+            Configuration Générale
+          </h2>
+          <p className="text-xs text-muted-foreground mt-1">
+            Gérez les paramètres globaux de l'application (numéro d'assistance WhatsApp et identifiants Fujisat).
+          </p>
+        </div>
+        <div className="p-5 flex flex-col gap-4 max-w-lg">
+          <div>
+            <label className="block text-xs font-semibold text-muted-foreground uppercase tracking-wide mb-1.5">Numéro d'assistance WhatsApp</label>
+            <input
+              type="text"
+              value={adminWhatsappSetting}
+              onChange={e => setAdminWhatsappSetting(e.target.value)}
+              placeholder="Ex : 237695225823"
+              className="w-full border border-input rounded-lg px-4 py-3 text-sm bg-background text-foreground focus:outline-none focus:ring-2 focus:ring-ring"
+            />
+            <p className="text-[10px] text-muted-foreground mt-1">Format recommandé : indicatif pays suivi du numéro (ex: 237695225823 pour le Cameroun).</p>
+          </div>
+
+          <div className="h-px bg-border my-2"/>
+
+          <div>
+            <label className="block text-xs font-semibold text-muted-foreground uppercase tracking-wide mb-1.5">FUJISAT USER</label>
+            <input
+              type="text"
+              value={fujisatUserSetting}
+              onChange={e => setFujisatUserSetting(e.target.value)}
+              placeholder="Nom d'utilisateur API Fujisat"
+              className="w-full border border-input rounded-lg px-4 py-3 text-sm bg-background text-foreground focus:outline-none focus:ring-2 focus:ring-ring"
+            />
+          </div>
+
+          <div>
+            <label className="block text-xs font-semibold text-muted-foreground uppercase tracking-wide mb-1.5">FUJISAT PASS</label>
+            <div className="relative">
+              <input
+                type={showFujisatPass ? "text" : "password"}
+                value={fujisatPassSetting}
+                onChange={e => setFujisatPassSetting(e.target.value)}
+                placeholder="Mot de passe API Fujisat"
+                className="w-full border border-input rounded-lg pl-4 pr-12 py-3 text-sm bg-background text-foreground focus:outline-none focus:ring-2 focus:ring-ring"
+              />
+              <button
+                type="button"
+                onClick={() => setShowFujisatPass(v => !v)}
+                className="absolute right-2 top-1/2 -translate-y-1/2 w-9 h-9 rounded-lg text-muted-foreground hover:text-foreground hover:bg-muted/60 flex items-center justify-center transition-colors"
+                title={showFujisatPass ? "Masquer le mot de passe" : "Afficher le mot de passe"}
+                aria-label={showFujisatPass ? "Masquer le mot de passe" : "Afficher le mot de passe"}
+              >
+                <Icon name={showFujisatPass ? "eyeOff" : "eye"} size={18}/>
+              </button>
+            </div>
+          </div>
+
+          <div className="rounded-lg border border-border bg-muted/20 p-4 flex items-center justify-between gap-4">
+            <div>
+              <p className="text-xs font-semibold text-foreground uppercase tracking-wide">FUJISAT TEST MODE</p>
+              <p className="text-xs text-muted-foreground mt-1">{fujisatTestModeSetting ? "Mode test actif" : "Mode production actif"}</p>
+            </div>
+            <Toggle checked={fujisatTestModeSetting} onChange={() => setFujisatTestModeSetting(v => !v)} loading={savingSettings}/>
+          </div>
+
+          <div>
+            <label className="block text-xs font-semibold text-muted-foreground uppercase tracking-wide mb-1.5">Taux de gain admin (%)</label>
+            <input
+              type="number"
+              min="0"
+              step="0.1"
+              value={adminGainRate}
+              onChange={e => setAdminGainRate(e.target.value)}
+              className="w-full border border-input rounded-lg px-4 py-3 text-sm bg-background text-foreground focus:outline-none focus:ring-2 focus:ring-ring"
+            />
+            <p className="text-[10px] text-muted-foreground mt-1">Ce taux remplace le 6% dans les KPI de gains admin.</p>
+          </div>
+          {settingsMsg && (
+            <p className={`text-xs font-medium ${settingsMsg.includes("") ? "text-green-700" : "text-red-600"}`}>
+              {settingsMsg}
+            </p>
+          )}
+
+          <button
+            onClick={saveSettings}
+            disabled={savingSettings}
+            className="flex items-center justify-center gap-1.5 px-4 py-3 bg-primary hover:bg-primary/90 text-primary-foreground text-sm font-semibold rounded-lg disabled:opacity-50 transition-colors"
+          >
+            {savingSettings ? (
+              <svg className="animate-spin" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                <circle cx="12" cy="12" r="10" strokeOpacity=".25"/>
+                <path d="M12 2a10 10 0 0 1 10 10"/>
+              </svg>
+            ) : (
+              <Icon name="save" size={14}/>
+            )}
+            Sauvegarder les paramètres
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+
   const renderRecharges = ()=>(
     <div className="flex flex-col gap-5">
-      {/* ✅ KPI avec rejetées */}
-      <div className="grid grid-cols-2 xl:grid-cols-4 gap-4">
+      {/*  KPI avec rejetées */}
+      <div className="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-4 gap-4">
         <KpiCard label="Total demandes" value={rechargeTotalCount||recharges.length} color="bg-gray-900 text-white"  icon="recharges"/>
         <KpiCard label="En attente"     value={recharges.filter(r=>r.statut==="en_attente").length} color="bg-amber-500 text-white" icon="bell"/>
         <KpiCard label="Validées"       value={recharges.filter(r=>r.statut==="validee").length}    color="bg-green-600 text-white" icon="check"/>
@@ -862,16 +1420,16 @@ export default function AdminDashboard() {
       <div className="bg-card rounded-lg shadow-sm border border-border overflow-hidden">
         <div className="px-5 pt-5 pb-3 border-b border-border flex flex-wrap items-center justify-between gap-3">
           <h2 className="text-sm font-bold text-card-foreground">Demandes de recharge</h2>
-          {/* ✅ Barre de recherche par date */}
+          {/*  Barre de recherche par date */}
           <div className="flex items-center gap-2 flex-wrap">
             <input type="date" value={rechargeSearchDate} onChange={e=>setRechargeSearchDate(e.target.value)}
                    className="px-3 py-2 border border-input rounded-lg text-sm bg-background focus:outline-none focus:ring-2 focus:ring-ring"/>
-            <button onClick={()=>{setRechargeDateFilter(rechargeSearchDate);setRechargeCurrentPage(1);}}
+            <button onClick={() => updateRechargeFilters(1, rechargeSearchDate)}
                     className="flex items-center gap-1 px-3 py-2 bg-primary text-primary-foreground text-xs font-semibold rounded-lg hover:bg-primary/90">
               <Icon name="search" size={12}/> Filtrer
             </button>
             {rechargeDateFilter&&(
-              <button onClick={()=>{setRechargeDateFilter("");setRechargeSearchDate("");setRechargeCurrentPage(1);}}
+              <button onClick={() => updateRechargeFilters(1, "")}
                       className="flex items-center gap-1 px-3 py-2 border border-border text-xs font-semibold rounded-lg hover:bg-muted/30 text-muted-foreground">
                 <Icon name="x" size={12}/> Effacer
               </button>
@@ -883,25 +1441,25 @@ export default function AdminDashboard() {
         </div>
         <div className="overflow-x-auto">
           <table className="w-full text-sm">
-            <thead><tr className="bg-muted/30 border-b border-border">{["Partenaire","Date","Opérateur","N° Transaction","Montant","Capture","Statut","Actions"].map(h=><th key={h} className="px-4 py-3 text-left text-[11px] font-semibold text-muted-foreground uppercase tracking-wide whitespace-nowrap">{h}</th>)}</tr></thead>
+            <thead><tr className="bg-muted/30 border-b border-border">{["N","Partenaire","Date","Oprateur","N Transaction","Montant","Capture","Statut","Actions"].map(h=><th key={h} className="px-4 py-3 text-left text-[11px] font-semibold text-muted-foreground uppercase tracking-wide whitespace-nowrap">{h}</th>)}</tr></thead>
             <tbody>
-              {loadingRecharges?<tr><td colSpan={8} className="text-center py-10 text-muted-foreground">Chargement…</td></tr>
-               :recharges.length===0?<tr><td colSpan={8} className="text-center py-10 text-muted-foreground">Aucune demande{rechargeDateFilter?` pour le ${rechargeDateFilter}`:""}</td></tr>
+              {loadingRecharges?<tr><td colSpan={9} className="text-center py-10 text-muted-foreground">Chargement⬦</td></tr>
+               :recharges.length===0?<tr><td colSpan={9} className="text-center py-10 text-muted-foreground">Aucune demande{rechargeDateFilter?` pour le ${rechargeDateFilter}`:""}</td></tr>
                :recharges.map((r,i)=>(
                 <tr key={r.id} className={`hover:bg-muted/30 ${i!==0?"border-t border-border":""}`}>
-                  <td className="px-4 py-3"><p className="font-semibold text-foreground">{r.prenom} {r.name}</p><p className="text-xs text-muted-foreground">{r.email}</p></td>
+                  <td className="px-4 py-3 text-xs font-bold text-muted-foreground">{(rechargeCurrentPage - 1) * 10 + i + 1}</td><td className="px-4 py-3"><p className="font-semibold text-foreground">{r.prenom} {r.name}</p><p className="text-xs text-muted-foreground">{r.email}</p></td>
                   <td className="px-4 py-3 text-muted-foreground whitespace-nowrap">{fmtDate(r.date_operation||r.created_at)}</td>
                   <td className="px-4 py-3 text-muted-foreground whitespace-nowrap">{r.moyen_paiement}</td>
                   <td className="px-4 py-3 font-mono text-xs text-foreground">{r.numero_paiement}</td>
                   <td className="px-4 py-3 font-bold text-green-700 whitespace-nowrap">{Number(r.montant).toLocaleString()} FCFA</td>
-                  {/* ✅ Capture ouvre une Lightbox au lieu d'un nouvel onglet */}
+                  {/*  Capture ouvre une Lightbox au lieu d'un nouvel onglet */}
                   <td className="px-4 py-3">
                     {r.capture
                       ?<button onClick={()=>setLightboxSrc(serverUrl(`/uploads/recharges/${r.capture}`))}
                                className="flex items-center gap-1 text-xs text-blue-600 hover:text-blue-800 font-medium underline">
                           <Icon name="eye" size={12}/> Voir
                         </button>
-                      :<span className="text-muted-foreground text-xs">—</span>}
+                      :<span className="text-muted-foreground text-xs"></span>}
                   </td>
                   <td className="px-4 py-3"><StatusBadge status={r.statut}/></td>
                   <td className="px-4 py-3">{r.statut==="en_attente"&&<div className="flex gap-1.5"><ActionBtn onClick={()=>validerRecharge(r.id)} color="green" icon="check" label="Valider"/><ActionBtn onClick={()=>rejeterRecharge(r.id)} color="red" icon="x" label="Rejeter"/></div>}</td>
@@ -910,15 +1468,15 @@ export default function AdminDashboard() {
             </tbody>
           </table>
         </div>
-        {/* ✅ Pagination sur les recharges */}
-        <PaginationBar currentPage={rechargeCurrentPage} totalPages={rechargeTotalPages} onPageChange={setRechargeCurrentPage}/>
+        {/*  Pagination sur les recharges */}
+        <PaginationBar currentPage={rechargeCurrentPage} totalPages={rechargeTotalPages} onPageChange={(p) => updateRechargeFilters(p, rechargeDateFilter)}/>
       </div>
       {/* Lightbox */}
       {lightboxSrc && <Lightbox src={lightboxSrc} onClose={()=>setLightboxSrc(null)}/>}
     </div>
   );
 
-  // ✅ Onglet Techniciens complet avec pagination + bouton nettoyage
+  //  Onglet Techniciens complet avec pagination + bouton nettoyage
   const renderTechniciens = ()=>(
     <div className="flex flex-col gap-5">
       <div className="flex items-center justify-between flex-wrap gap-3">
@@ -943,11 +1501,11 @@ export default function AdminDashboard() {
           <table className="w-full text-sm">
             <thead><tr className="bg-muted/30 border-b border-border">{["Partenaire","Client","Ville/Quartier","Téléphone","Problème","Date","Statut","Actions"].map(h=><th key={h} className="px-4 py-3 text-left text-[11px] font-semibold text-muted-foreground uppercase tracking-wide whitespace-nowrap">{h}</th>)}</tr></thead>
             <tbody>
-              {loadingTech?<tr><td colSpan={8} className="text-center py-10 text-muted-foreground">Chargement…</td></tr>
+              {loadingTech?<tr><td colSpan={8} className="text-center py-10 text-muted-foreground">Chargement⬦</td></tr>
                :demandeTech.length===0?<tr><td colSpan={8} className="text-center py-10 text-muted-foreground">Aucune demande</td></tr>
                :demandeTech.map((d,i)=>(
                 <tr key={d.id} className={`hover:bg-muted/30 ${i!==0?"border-t border-border":""}`}>
-                  <td className="px-4 py-3"><p className="font-semibold text-foreground">{d.prenom} {d.name}</p><p className="text-xs text-muted-foreground">{d.structure||"—"}</p></td>
+                  <td className="px-4 py-3"><p className="font-semibold text-foreground">{d.prenom} {d.name}</p><p className="text-xs text-muted-foreground">{d.structure||""}</p></td>
                   <td className="px-4 py-3 font-medium text-foreground">{d.nom_client}</td>
                   <td className="px-4 py-3 text-muted-foreground whitespace-nowrap">{d.ville}, {d.quartier}</td>
                   <td className="px-4 py-3 text-muted-foreground whitespace-nowrap">{d.telephone}</td>
@@ -987,9 +1545,9 @@ export default function AdminDashboard() {
         <table className="w-full text-sm">
           <thead><tr className="bg-muted/30 border-b border-border">{["Numéro","Statut","Partenaire attribué"].map(h=><th key={h} className="px-5 py-3 text-left text-[11px] font-semibold text-muted-foreground uppercase tracking-wide">{h}</th>)}</tr></thead>
           <tbody>
-            {loadingDecoders?<tr><td colSpan={3} className="text-center py-10 text-muted-foreground">Chargement…</td></tr>
+            {loadingDecoders?<tr><td colSpan={3} className="text-center py-10 text-muted-foreground">Chargement⬦</td></tr>
              :decodeurs.length===0?<tr><td colSpan={3} className="text-center py-10 text-muted-foreground">Aucun décodeur</td></tr>
-             :decodeurs.map(d=>(
+             :paginatedDecodeurs.map(d=>(
               <tr key={d.id} className="border-t border-border hover:bg-muted/30">
                 <td className="px-5 py-3 font-mono font-semibold text-foreground">{d.numero}</td>
                 <td className="px-5 py-3"><span className={`px-2 py-1 text-xs rounded font-semibold ${d.status==="free"?"bg-green-100 text-green-700":"bg-red-100 text-red-700"}`}>{d.status==="free"?"Disponible":"Utilisé"}</span></td>
@@ -998,6 +1556,7 @@ export default function AdminDashboard() {
             ))}
           </tbody>
         </table>
+        <PaginationBar currentPage={decoderSafePage} totalPages={decoderTotalPages} onPageChange={setDecoderPage}/>
       </div>
       {showAddDecoderModal&&(
         <Modal title="Ajouter un décodeur" onClose={()=>setShowAddDecoderModal(false)}>
@@ -1006,8 +1565,8 @@ export default function AdminDashboard() {
             <div>
               <label className="block text-xs font-semibold text-muted-foreground uppercase tracking-wide mb-1.5">Partenaire</label>
               <select value={newDecoder.partner_id} onChange={e=>setNewDecoder({...newDecoder,partner_id:e.target.value})} className="w-full px-4 py-2.5 rounded-lg border border-input text-sm text-foreground focus:outline-none focus:ring-2 focus:ring-ring bg-background">
-                <option value="">— Sélectionner —</option>
-                {partners.filter(p=>p.status==="approved").map(p=><option key={p.id} value={p.id}>{p.prenom} {p.name}{p.codePromo?` — ${p.codePromo}`:""}</option>)}
+                <option value=""> Sélectionner </option>
+                {partners.filter(p=>p.status==="approved").map(p=><option key={p.id} value={p.id}>{p.prenom} {p.name}{p.codePromo?`  ${p.codePromo}`:""}</option>)}
               </select>
             </div>
             {addDecoderError&&<div className="flex items-center gap-2 px-3 py-2.5 bg-destructive/10 border border-destructive/20 rounded-xl text-xs text-destructive"><Icon name="x" size={13}/> {addDecoderError}</div>}
@@ -1021,15 +1580,15 @@ export default function AdminDashboard() {
     </div>
   );
 
-  const pageMap    = { dashboard:renderDashboard, partners:renderPartners, stats:renderStats, wallets:renderWallets, recharges:renderRecharges, commissions:renderCommissions, techniciens:renderTechniciens, decoders:renderDecoders };
-  const pageTitles = { dashboard:"Tableau de bord", partners:"Partenaires", stats:"Statistiques", wallets:"Portefeuilles", recharges:"Demandes de recharge", commissions:"Commissions", techniciens:"Demandes techniciens", decoders:"Décodeurs" };
+  const pageMap    = { dashboard:renderDashboard, partners:renderPartners, stats:renderStats, recharges:renderRecharges, commissions:renderCommissions, formules:renderFormules, techniciens:renderTechniciens, decoders:renderDecoders, settings:renderSettings };
+  const pageTitles = { dashboard:"Tableau de bord", partners:"Partenaires", stats:"Statistiques", recharges:"Demandes de recharge", commissions:"Commissions", formules:"Formules", techniciens:"Demandes techniciens", decoders:"Décodeurs", settings:"Paramètres" };
 
-  // ── Sidebar content ─────────────────────────────────────────────────────────
+  //  Sidebar content 
   const SidebarContent = ()=>(
     <>
-      {/* ✅ Logo de l'application dans la sidebar */}
+      {/*  Logo de l'application dans la sidebar */}
       <div className={`flex items-center gap-3 px-4 py-5 border-b border-border ${sidebarOpen?"":"justify-center"}`}>
-        <button onClick={()=>setActivePage("dashboard")} className="hover:opacity-80 transition-opacity flex-shrink-0">
+        <button onClick={()=>goAdminPage("dashboard")} className="hover:opacity-80 transition-opacity flex-shrink-0">
           <img src={logo} alt="Vision Canal+" className={`object-contain rounded-xl ${sidebarOpen?"h-10 w-auto":"h-9 w-9"}`}/>
         </button>
         {sidebarOpen&&<div><p className="text-sm font-bold leading-none">Vision Canal<span className="text-destructive">+</span></p><p className="text-[10px] text-muted-foreground mt-0.5">Administration</p></div>}
@@ -1039,7 +1598,7 @@ export default function AdminDashboard() {
           const active = activePage===id;
           const badge  = id==="recharges" ? recharges.filter(r=>r.statut==="en_attente").length : id==="techniciens" ? demandeTech.filter(d=>d.statut==="en_attente").length : 0;
           return (
-            <button key={id} onClick={()=>{setActivePage(id);setMobileSidebarOpen(false);}} title={!sidebarOpen?label:undefined}
+            <button key={id} onClick={()=>{goAdminPage(id);setMobileSidebarOpen(false);}} title={!sidebarOpen?label:undefined}
                     className={`flex items-center gap-3 px-3 py-2.5 rounded-lg text-sm font-medium transition-all text-left ${active?"bg-primary text-primary-foreground shadow-md":"text-muted-foreground hover:bg-muted hover:text-foreground"} ${!sidebarOpen?"justify-center":""}`}>
               <Icon name={icon} size={18} className="flex-shrink-0"/>
               {sidebarOpen&&<span className="flex-1">{label}</span>}
@@ -1061,13 +1620,13 @@ export default function AdminDashboard() {
     <div className="min-h-screen bg-background flex flex-col" style={{fontFamily:"'DM Sans', sans-serif"}}>
       <div className="flex flex-1 overflow-hidden">
 
-        {/* ✅ SIDEBAR DESKTOP */}
+        {/*  SIDEBAR DESKTOP */}
         <aside className={`hidden lg:flex flex-col bg-card transition-all duration-300 flex-shrink-0 ${sidebarOpen?"w-64":"w-16"} border-r border-border`}
                style={{height:"100vh",position:"fixed",top:0,left:0,bottom:0,zIndex:30,overflowY:"auto"}}>
           <SidebarContent/>
         </aside>
 
-        {/* ✅ SIDEBAR MOBILE — overlay, disparaît en mobile par défaut */}
+        {/*  SIDEBAR MOBILE  overlay, disparaît en mobile par défaut */}
         {mobileSidebarOpen&&(
           <>
             <div className="fixed inset-0 z-40 bg-black/50 lg:hidden" onClick={()=>setMobileSidebarOpen(false)}/>
@@ -1090,7 +1649,7 @@ export default function AdminDashboard() {
        marginLeft: window.innerWidth >= 1024 ? (sidebarOpen ? 256 : 64) : 0,
        transition: "margin-left 0.3s"
      }}>
-          {/* ✅ AdminNavbar avec bouton hamburger en mobile */}
+          {/*  AdminNavbar avec bouton hamburger en mobile */}
           <AdminNavbar
             activePage={activePage}
             pageTitle={pageTitles[activePage]}
@@ -1125,6 +1684,7 @@ export default function AdminDashboard() {
           <div className="flex gap-3 mt-6"><button onClick={()=>setShowEditModal(false)} className="flex-1 px-4 py-2.5 rounded-lg border border-border text-sm font-semibold text-foreground hover:bg-muted/30">Annuler</button><button onClick={saveEdit} className="flex-1 px-4 py-2.5 rounded-lg bg-primary text-primary-foreground text-sm font-semibold hover:bg-primary/90">Enregistrer</button></div>
         </Modal>
       )}
+      <AiAssistant />
     </div>
   );
 }

@@ -2,6 +2,7 @@ const RATE_LEVELS = [0, 4, 4.5, 5, 5.5, 6, 6.5, 7, 7.5, 8, 8.5, 9, 9.5, 10];
 const BASE_RATE = 4;
 const MAX_RATE = 10;
 const RATE_INCREMENT = 0.5;
+const DISABLED_FORMULE_CODES = new Set(["EVPDD"]);
 
 const DEFAULT_RULES = [
   { code: "ACDD",            name: "Access",        type: "formule", price: 5000,  inChart: 1, order: 1 },
@@ -9,9 +10,9 @@ const DEFAULT_RULES = [
   { code: "CHARME",          name: "Charme",        type: "option",  price: 7000,  inChart: 1, order: 3 },
   { code: "EVDD",            name: "Évasion",       type: "formule", price: 10500, inChart: 1, order: 4 },
   { code: "ACPDD",           name: "Acces+",        type: "formule", price: 15000, inChart: 1, order: 5 },
-  { code: "EVPDD",           name: "Evasion+",      type: "formule", price: 20000, inChart: 1, order: 6 },
-  { code: "TCADD",           name: "Tout Canal+",   type: "formule", price: 28000, inChart: 1, order: 7 },
-  { code: "NETFLIX",         name: "Netflix Basic", type: "option",  price: 3000,  fixed: 120, inChart: 0, order: 8 },
+  { code: "TCADD",           name: "Tout Canal+",   type: "formule", price: 28000, inChart: 1, order: 6 },
+  { code: "NETFLIX",         name: "Netflix Basic", type: "option",  price: 3000,  fixed: 120, inChart: 0, order: 7 },
+  { code: "NETFLIX STANDARD",name: "Netflix Standard",type:"option", price: 5500,  fixed: 220, inChart: 0, order: 8 },
   { code: "NETFLIX PREMIUM", name: "Netflix Premium",type:"option",  price: 7000,  fixed: 280, inChart: 0, order: 9 },
 ];
 
@@ -22,8 +23,7 @@ const OPTION_CODE_MAP = {
   "Évasion":           "EVDD",
   "Access+":           "ACPDD",
   "Acces+":            "ACPDD",
-  "Evasion+":          "EVPDD",
-  "Évasion+":          "EVPDD",
+
   "Tout Canal+":       "TCADD",
   "Charme":            "CHARME",
   "CHARME":            "CHARME",
@@ -35,6 +35,12 @@ const OPTION_CODE_MAP = {
   "ENGLISH PLUS DD":   "ENGLISH PLUS DD",
   "english plus dd":   "ENGLISH PLUS DD",
   "ENGLISHPLUSDD":     "ENGLISH PLUS DD",
+  "Netflix":           "NETFLIX",
+  "NETFLIX":           "NETFLIX",
+  "Netflix Standard":  "NETFLIX STANDARD",
+  "NETFLIX STANDARD":  "NETFLIX STANDARD",
+  "Netflix Premium":   "NETFLIX PREMIUM",
+  "NETFLIX PREMIUM":   "NETFLIX PREMIUM",
 };
 
 const normalizeCode = (raw) => {
@@ -151,6 +157,22 @@ const ensureCommissionTables = async (connection) => {
   await ensureColumn(connection, "commission_daily_history", "trend_direction",      "trend_direction VARCHAR(12) NOT NULL DEFAULT 'base'");
 
   await connection.query(`
+    CREATE TABLE IF NOT EXISTS commission_cashbox_movements (
+      id INT AUTO_INCREMENT PRIMARY KEY,
+      business_day_key VARCHAR(10) NOT NULL,
+      formule_code VARCHAR(80) NOT NULL,
+      formule_name VARCHAR(120) NOT NULL,
+      movement_type VARCHAR(20) NOT NULL,
+      amount DECIMAL(14,2) NOT NULL DEFAULT 0,
+      balance_before DECIMAL(14,2) NOT NULL DEFAULT 0,
+      balance_after DECIMAL(14,2) NOT NULL DEFAULT 0,
+      note VARCHAR(255) NULL,
+      created_by INT NULL,
+      created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+    )
+  `);
+
+  await connection.query(`
     CREATE TABLE IF NOT EXISTS commission_operation_history (
       id INT AUTO_INCREMENT PRIMARY KEY,
       business_day_key VARCHAR(10) NOT NULL,
@@ -227,12 +249,27 @@ const resetExpiredBusinessDays = async (connection) => {
        row.base_progress_count, row.required_base_count, row.bonus_step,
        row.trend_direction, row.commission_actuelle]
     );
+    if (Number(row.cashbox_amount || 0) > 0) {
+      await connection.query(
+        `INSERT INTO commission_cashbox_movements
+         (business_day_key, formule_code, formule_name, movement_type, amount, balance_before, balance_after, note)
+         VALUES (?, ?, ?, 'reset', ?, ?, 0, ?)`,
+        [
+          row.business_day_key || today,
+          row.formule_code,
+          row.formule_name,
+          Number(row.cashbox_amount || 0),
+          Number(row.cashbox_amount || 0),
+          "Reset automatique de la journee metier",
+        ]
+      );
+    }
   }
   if (expired.length > 0) {
     await connection.query(
       `UPDATE commission_rules
        SET current_rate=base_rate,
-           cashbox_amount=cashbox_amount,
+           cashbox_amount=0,
            activation_count=0,
            base_progress_count=0,
            required_base_count=1,
@@ -250,7 +287,7 @@ const resetExpiredBusinessDays = async (connection) => {
 
 const getCommissionRules = async (connection, { chartOnly = false } = {}) => {
   await ensureCommissionTables(connection);
-  const where = chartOnly ? "WHERE in_chart = 1" : "";
+  const where = chartOnly ? "WHERE in_chart = 1 AND formule_code NOT IN ('EVPDD')" : "WHERE formule_code NOT IN ('EVPDD')";
   const [rows] = await connection.query(
     `SELECT formule_code, formule_name, rule_type, price, commission_base, commission_actuelle,
             base_rate, current_rate, cashbox_amount, activation_count, in_chart, display_order,
@@ -287,6 +324,104 @@ const getCommissionRules = async (connection, { chartOnly = false } = {}) => {
       updated_at:          r.updated_at,
     };
   });
+};
+
+const getFormulaCatalog = async (connection, { includeOptions = true } = {}) => {
+  const rows = await getCommissionRules(connection, { chartOnly: false });
+  return rows
+    .filter((row) => includeOptions || row.rule_type === "formule")
+    .map((row) => ({
+      code: row.formule_code,
+      name: row.formule_name,
+      type: row.rule_type,
+      price: Number(row.price) || 0,
+      in_chart: Number(row.in_chart) || 0,
+      display_order: Number(row.display_order) || 0,
+    }));
+};
+
+const getFormulaPrice = async (connection, codeOrName) => {
+  await ensureCommissionTables(connection);
+  const code = normalizeCode(codeOrName);
+  if (DISABLED_FORMULE_CODES.has(code)) return 0;
+  const [[row]] = await connection.query(
+    "SELECT price FROM commission_rules WHERE formule_code = ? LIMIT 1",
+    [code]
+  );
+  return row ? Number(row.price) || 0 : 0;
+};
+
+const getFormulaPrices = async (connection, codes = []) => {
+  await ensureCommissionTables(connection);
+  const normalized = [...new Set(codes.map(normalizeCode).filter((code) => code && !DISABLED_FORMULE_CODES.has(code)))];
+  if (normalized.length === 0) return {};
+  const placeholders = normalized.map(() => "?").join(",");
+  const [rows] = await connection.query(
+    `SELECT formule_code, price FROM commission_rules WHERE formule_code IN (${placeholders})`,
+    normalized
+  );
+  return Object.fromEntries(rows.map((row) => [row.formule_code, Number(row.price) || 0]));
+};
+
+const adjustCashbox = async (connection, code, { type = "add", amount = 0, adminId = null, note = "" } = {}) => {
+  await ensureCommissionTables(connection);
+  const normalized = normalizeCode(code);
+  if (DISABLED_FORMULE_CODES.has(normalized)) throw new Error("Formule indisponible");
+  const value = Number(amount);
+  if (!value || value <= 0) throw new Error("Montant invalide");
+  const [[rule]] = await connection.query("SELECT * FROM commission_rules WHERE formule_code=? FOR UPDATE", [normalized]);
+  if (!rule) throw new Error("Regle introuvable");
+
+  const before = Number(rule.cashbox_amount || 0);
+  if (type === "withdraw" && value > before) throw new Error("Montant superieur a la caisse disponible");
+  const after = type === "withdraw" ? before - value : before + value;
+  const price = Number(rule.price);
+  const baseRate = Number(rule.base_rate) || BASE_RATE;
+  const nextRate = after > 0 ? cashboxRate(price, after, baseRate) : baseRate;
+  const nextCommission = after > 0
+    ? Math.min(commissionCap(price), baseCommissionForPrice(price, baseRate) + Math.min(maxCashboxBonus(price, baseRate), after))
+    : (rule.fixed_commission !== null ? Number(rule.fixed_commission) : baseCommissionForPrice(price, baseRate));
+  const movementType = type === "withdraw" ? "withdraw" : "add";
+
+  await connection.query(
+    `UPDATE commission_rules
+     SET cashbox_amount=?, current_rate=?, commission_actuelle=?, trend_direction=?, updated_by='admin'
+     WHERE formule_code=?`,
+    [after, nextRate, nextCommission, movementType === "withdraw" ? "down" : "up", normalized]
+  );
+  await connection.query(
+    `INSERT INTO commission_cashbox_movements
+     (business_day_key, formule_code, formule_name, movement_type, amount, balance_before, balance_after, note, created_by)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    [getBusinessDayKey(), normalized, rule.formule_name, movementType, value, before, after, note || null, adminId]
+  );
+  const [[updated]] = await connection.query("SELECT * FROM commission_rules WHERE formule_code=?", [normalized]);
+  return updated;
+};
+
+const getCashboxMovements = async (connection, { date = getBusinessDayKey() } = {}) => {
+  await ensureCommissionTables(connection);
+  const [rows] = await connection.query(
+    `SELECT * FROM commission_cashbox_movements
+     WHERE business_day_key = ?
+     ORDER BY created_at DESC, id DESC`,
+    [date]
+  );
+  const [[totals]] = await connection.query(
+    `SELECT
+       COALESCE(SUM(CASE WHEN movement_type='add' THEN amount ELSE 0 END), 0) AS total_added,
+       COALESCE(SUM(CASE WHEN movement_type IN ('withdraw','reset') THEN amount ELSE 0 END), 0) AS total_removed
+     FROM commission_cashbox_movements
+     WHERE business_day_key = ?`,
+    [date]
+  );
+  return {
+    rows,
+    totals: {
+      total_added: Number(totals.total_added || 0),
+      total_removed: Number(totals.total_removed || 0),
+    },
+  };
 };
 
 const updateCommissionRule = async (connection, code, patch) => {
@@ -521,6 +656,11 @@ module.exports = {
   getBusinessDayKey,
   ensureCommissionTables,
   getCommissionRules,
+  getFormulaCatalog,
+  getFormulaPrice,
+  getFormulaPrices,
+  adjustCashbox,
+  getCashboxMovements,
   updateCommissionRule,
   calculateAndApplyCommissions,
   calculateAdminCommission,

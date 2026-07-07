@@ -1,8 +1,9 @@
 import { useState, useEffect, useRef } from "react";
 import { FaBell, FaBars } from "react-icons/fa";
-import { io } from "socket.io-client";
-import { API_URL, SOCKET_URL } from "../lib/api";
+import { createAppSocket } from "../lib/socket";
+import { API_URL } from "../lib/api";
 import { authFetchOptions } from "../lib/session";
+import { notifyUser, requestNotificationPermission } from "../lib/notifications";
 
 function AdminNavbar({ pageTitle, toggleSidebar }) {
   const [notifications, setNotifications] = useState([]);
@@ -36,14 +37,13 @@ function AdminNavbar({ pageTitle, toggleSidebar }) {
   useEffect(() => {
     fetchNotifications();
     const interval = setInterval(fetchNotifications, 15000);
-    socketRef.current = io(SOCKET_URL, {
-      transports: ["websocket"],
-    });
+    socketRef.current = createAppSocket();
     socketRef.current.on("connect", () => {
       console.log("Socket connecté :", socketRef.current.id);
     });
     socketRef.current.on("new_notification", () => {
       fetchNotifications();
+      notifyUser({ title: "Vision Canal+ Admin", body: "Nouvelle notification admin" });
     });
     return () => {
       clearInterval(interval);
@@ -68,7 +68,7 @@ function AdminNavbar({ pageTitle, toggleSidebar }) {
       <div className="relative">
         <button
           className="relative text-muted-foreground hover:text-foreground transition-colors"
-          onClick={() => setShowDropdown((v) => !v)}
+          onClick={() => { requestNotificationPermission(); setShowDropdown((v) => !v); }}
         >
           <FaBell size={20} />
           {notifications.length > 0 && (
@@ -114,7 +114,7 @@ function AdminNavbar({ pageTitle, toggleSidebar }) {
                     <div className="text-xs text-muted-foreground mt-0.5">
                       {notif.created_at
                         ? new Date(notif.created_at).toLocaleString("fr-FR")
-                        : "—"}
+                        : ""}
                     </div>
                   </div>
                 ))}

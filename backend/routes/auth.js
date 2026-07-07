@@ -6,20 +6,123 @@ const pool    = require('../db');
 const router  = express.Router();
 const { sendResetCode } = require("../utils/mailer");
 
+const cleanText = (value = "") => String(value || "").trim();
+const cleanEmail = (value = "") => cleanText(value).toLowerCase();
+const normalizeLocalPhone = (value = "") => {
+  const digits = String(value || "").replace(/\D/g, "");
+  if (digits.startsWith("00237") && digits.length === 14) return digits.slice(5);
+  if (digits.startsWith("237") && digits.length === 12) return digits.slice(3);
+  return digits;
+};
+const validHumanText = (value = "") => /^[A-Za-zÀ-ÖØ-öø-ÿ' -]{2,}$/.test(cleanText(value));
+
+const isPasswordAlreadyUsedByPartner = async (plainPassword, excludedUserId = null) => {
+  const [rows] = await pool.query(
+    "SELECT id, password FROM users WHERE role = 'partner' AND password IS NOT NULL"
+  );
+
+  for (const row of rows) {
+    if (excludedUserId && Number(row.id) === Number(excludedUserId)) continue;
+    if (row.password && await bcrypt.compare(plainPassword, row.password)) {
+      return true;
+    }
+  }
+
+  return false;
+};
+
 // ── INSCRIPTION ───────────────────────────────────────────────────────────────
 router.post("/register", async (req, res) => {
-  const { name, prenom, structure, pays, ville, quartier, telephone, password, email, codePromo } = req.body;
+  const {
+    name,
+    prenom,
+    structure,
+    pays,
+    ville,
+    quartier,
+    password = "",
+    codePromo,
+  } = req.body;
+
+  const telephone = normalizeLocalPhone(req.body.telephone);
+  const email = cleanEmail(req.body.email);
+  const cleanPassword = String(password || "");
+
+  const requiredFields = {
+    name: cleanText(name),
+    prenom: cleanText(prenom),
+    structure: cleanText(structure),
+    pays: cleanText(pays),
+    ville: cleanText(ville),
+    quartier: cleanText(quartier),
+    telephone,
+    password: cleanPassword,
+  };
+
+  if (Object.values(requiredFields).some((value) => !value)) {
+    return res.status(400).json({ message: "Veuillez renseigner tous les champs obligatoires." });
+  }
+
+  if (!/^\d{9}$/.test(telephone)) {
+    return res.status(400).json({ message: "Le numéro de téléphone doit contenir exactement 9 chiffres." });
+  }
+
+  if (![name, prenom, pays, ville, quartier].every(validHumanText)) {
+    return res.status(400).json({ message: "Nom, prénom, pays, ville et quartier ne doivent pas contenir de chiffres." });
+  }
+
+  if (cleanPassword.length < 8) {
+    return res.status(400).json({ message: "Le mot de passe doit contenir au moins 8 caractères." });
+  }
+
   try {
-    const hashedPassword = await bcrypt.hash(password, 10);
+    const [existingUsers] = await pool.query(
+      `SELECT id, telephone, email FROM users
+       WHERE telephone = ? OR (? <> '' AND LOWER(email) = ?)
+       LIMIT 1`,
+      [telephone, email, email]
+    );
+
+    if (existingUsers.length > 0) {
+      const existing = existingUsers[0];
+      const existingEmail = cleanEmail(existing.email);
+      if (existing.telephone === telephone) {
+        return res.status(409).json({ message: "Cet identifiant telephone est deja utilise par un autre partenaire." });
+      }
+      if (email && existingEmail === email) {
+        return res.status(409).json({ message: "Cette adresse email est deja utilisee par un autre partenaire." });
+      }
+      return res.status(409).json({ message: "Cet identifiant est deja utilise par un autre partenaire." });
+    }
+
+    if (await isPasswordAlreadyUsedByPartner(cleanPassword)) {
+      return res.status(409).json({ message: "Ce mot de passe est deja utilise par un autre partenaire. Choisissez un mot de passe different." });
+    }
+
+    const hashedPassword = await bcrypt.hash(cleanPassword, 10);
     await pool.query(
       `INSERT INTO users (name, prenom, structure, pays, ville, quartier, telephone, email, password, role, status, codePromo)
        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'partner', 'pending', ?)`,
-      [name, prenom, structure, pays, ville, quartier, telephone, email, hashedPassword, codePromo || null]
+      [
+        cleanText(name),
+        cleanText(prenom),
+        cleanText(structure),
+        cleanText(pays),
+        cleanText(ville),
+        cleanText(quartier),
+        telephone,
+        email || null,
+        hashedPassword,
+        cleanText(codePromo) || null,
+      ]
     );
-    const msg = `Nouvelle inscription de ${prenom} ${name} (${structure})`;
+    const msg = `Nouvelle inscription de ${cleanText(prenom)} ${cleanText(name)} (${cleanText(structure)})`;
     await pool.query("INSERT INTO notifications (type, message) VALUES (?, ?)", ['inscription', msg]);
-    if (req.io) req.io.emit("new_notification", { type: 'inscription', message: msg, created_at: new Date() });
-    res.json({ message: "Inscription réussie, en attente de validation." });
+    if (req.io) {
+      req.io.emit("new_notification", { type: 'inscription', message: msg, created_at: new Date() });
+      req.io.emit("admin_dashboard_update", { type: 'partner_created' });
+    }
+    res.json({ message: "Inscription reussie, en attente de validation." });
   } catch (err) {
     console.error("Erreur register:", err);
     res.status(500).json({ error: "Erreur serveur" });
@@ -108,8 +211,10 @@ router.post("/forgot-password", async (req, res) => {
     );
 
     if (!user) {
-      // On ne révèle pas si l'utilisateur existe (sécurité)
-      return res.json({ success: true, message: "Si ce compte existe, un code a été envoyé." });
+      return res.status(404).json({ error: "Adresse email ou telephone incorrect" });
+    }
+    if (!user.email) {
+      return res.status(400).json({ error: "Ce compte n'a pas d'adresse email enregistree" });
     }
 
     // Générer un code à 6 chiffres
@@ -137,7 +242,7 @@ router.post("/forgot-password", async (req, res) => {
       prenom: user.prenom || user.name,
       code,
     });
-    console.log(`✅ Email de reset envoyé à ${user.email}`);
+    console.log(`Email de reset envoyé à ${user.email}`);
   } catch (emailErr) {
     console.error("❌ Erreur envoi email:", emailErr.message);
     // On ne bloque pas — on continue quand même
@@ -206,7 +311,7 @@ router.post("/verify-reset-code", async (req, res) => {
 router.post("/reset-password", async (req, res) => {
   const { reset_token, nouveau_password } = req.body;
   if (!reset_token || !nouveau_password) return res.status(400).json({ error: "Données manquantes" });
-  if (nouveau_password.length < 6) return res.status(400).json({ error: "Mot de passe trop court (min 6 caractères)" });
+  if (nouveau_password.length < 8) return res.status(400).json({ error: "Mot de passe trop court (min 8 caractères)" });
 
   try {
     const [[entry]] = await pool.query(
@@ -218,7 +323,10 @@ router.post("/reset-password", async (req, res) => {
 
     if (!entry) return res.status(400).json({ error: "Token invalide ou expiré" });
 
-    const bcrypt = require("bcryptjs");
+    if (await isPasswordAlreadyUsedByPartner(nouveau_password, entry.user_id)) {
+      return res.status(409).json({ error: "Ce mot de passe est deja utilise par un autre partenaire. Choisissez un mot de passe different." });
+    }
+
     const hashed = await bcrypt.hash(nouveau_password, 10);
 
     await pool.query("UPDATE users SET password = ? WHERE id = ?", [hashed, entry.user_id]);

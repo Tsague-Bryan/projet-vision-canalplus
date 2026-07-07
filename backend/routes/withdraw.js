@@ -101,10 +101,10 @@ router.post("/withdraw-wallet", auth, async (req, res) => {
     }
 
     const partnerName = `${u.prenom||""} ${u.name}`.trim();
-    await connection.query("INSERT INTO notifications (type, message, created_at) VALUES (?, ?, NOW())", ["demande_retrait", `💰 ${partnerName} demande un retrait de ${Number(montant).toLocaleString()} FCFA${numero ? ` vers le ${numero}` : ""}${date ? ` pour le ${date}` : ""}.`]);
+    await connection.query("INSERT INTO notifications (type, message, created_at) VALUES (?, ?, NOW())", ["demande_retrait", ` ${partnerName} demande un retrait de ${Number(montant).toLocaleString()} FCFA${numero ? ` vers le ${numero}` : ""}${date ? ` pour le ${date}` : ""}.`]);
     await connection.commit();
 
-    if (req.io) req.io.emit("new_notification", { type: "demande_retrait", message:`💰 Demande retrait — ${partnerName}` });
+    if (req.io) req.io.emit("new_notification", { type: "demande_retrait", message:` Demande retrait — ${partnerName}` });
 
     return res.json({ success: true, message: "Demande envoyée. L'admin validera sous peu." });
   } catch (err) {

@@ -2,6 +2,7 @@ const express = require("express");
 const axios = require("axios");
 const dotenv = require("dotenv");
 dotenv.config();
+const pool = require("../db");
 const router = express.Router();
 
 router.post("/search", async (req, res) => {
@@ -51,13 +52,24 @@ router.post("/search", async (req, res) => {
 
     console.log("Payload Fujisat envoyé:", fujiPayload);
 
+    let fujiUser = process.env.FUJISAT_USER;
+    let fujiPass = process.env.FUJISAT_PASS;
+    try {
+      const [[userRow]] = await pool.query("SELECT valeur FROM app_config WHERE cle = 'fujisat_user' LIMIT 1");
+      const [[passRow]] = await pool.query("SELECT valeur FROM app_config WHERE cle = 'fujisat_pass' LIMIT 1");
+      if (userRow) fujiUser = userRow.valeur;
+      if (passRow) fujiPass = passRow.valeur;
+    } catch (e) {
+      console.warn("Impossible de récupérer les identifiants Fujisat depuis la BDD, repli vers .env");
+    }
+
     const response = await axios.post(
       `${process.env.FUJISAT_URL}/public-api/abonne/search`,
       fujiPayload,
       {
         auth: {
-          username: process.env.FUJISAT_USER,
-          password: process.env.FUJISAT_PASS
+          username: fujiUser,
+          password: fujiPass
         },
         headers: { "Content-Type": "application/json" }
       }

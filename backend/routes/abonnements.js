@@ -5,15 +5,20 @@ const db = require("../db");
 const auth = require("../middleware/auth");
 const fs = require("fs");
 const path = require("path");
-const { calculateAndApplyCommissions, calculateAdminCommission } = require("../utils/commissionEngine");
+const { calculateAdminCommission, getFormulaPrice } = require("../utils/commissionEngine");
 
-const isTestMode = () => String(process.env.FUJISAT_TEST_MODE).toLowerCase().trim() === "true";
+const isTestMode = async () => {
+  try {
+    const [[row]] = await db.query("SELECT valeur FROM app_config WHERE cle = 'fujisat_test_mode' LIMIT 1");
+    if (row) return String(row.valeur).toLowerCase().trim() === "true";
+  } catch (_) {}
+  return String(process.env.FUJISAT_TEST_MODE).toLowerCase().trim() === "true";
+};
 
 const PRIX_FORMULES = {
   ACDD: 5000,
   EVDD: 10500,
   ACPDD: 15000,
-  EVPDD: 20000,
   TCADD: 28000,
 };
 
@@ -21,9 +26,17 @@ const NOMS_FORMULES = {
   ACDD: "Access",
   EVDD: "Evasion",
   ACPDD: "Access+",
-  EVPDD: "Evasion+",
   TCADD: "Tout Canal+",
 };
+
+const normalizeLocalPhone = (phone = "") => {
+  const digits = String(phone || "").replace(/\D/g, "");
+  if (digits.startsWith("00237") && digits.length === 14) return digits.slice(5);
+  if (digits.startsWith("237") && digits.length === 12) return digits.slice(3);
+  return digits;
+};
+
+const validHumanText = (value = "") => /^[A-Za-zÀ-ÖØ-öø-ÿ' -]{2,}$/.test(String(value || "").trim());
 
 const formatPhone = (phone) => {
   if (!phone) return "";
@@ -41,7 +54,7 @@ const subscriptionEndpoint = () => {
 };
 
 const callFujisatSubscription = async (payload) => {
-  if (isTestMode()) {
+  if (await isTestMode()) {
     console.log("[TEST MODE] Simulation abonnement Fujisat");
     console.log("Payload abonnement:", JSON.stringify(payload, null, 2));
     await new Promise((resolve) => setTimeout(resolve, 300));
@@ -56,8 +69,19 @@ const callFujisatSubscription = async (payload) => {
     };
   }
 
+  let fujiUser = process.env.FUJISAT_USER;
+  let fujiPass = process.env.FUJISAT_PASS;
+  try {
+    const [[userRow]] = await db.query("SELECT valeur FROM app_config WHERE cle = 'fujisat_user' LIMIT 1");
+    const [[passRow]] = await db.query("SELECT valeur FROM app_config WHERE cle = 'fujisat_pass' LIMIT 1");
+    if (userRow) fujiUser = userRow.valeur;
+    if (passRow) fujiPass = passRow.valeur;
+  } catch (e) {
+    console.warn("Impossible de récupérer les identifiants Fujisat depuis la BDD, repli vers .env");
+  }
+
   return axios.post(subscriptionEndpoint(), payload, {
-    auth: { username: process.env.FUJISAT_USER, password: process.env.FUJISAT_PASS },
+    auth: { username: fujiUser, password: fujiPass },
     headers: { "Content-Type": "application/json" },
     timeout: 60000,
   });
@@ -78,8 +102,16 @@ router.post("/abonnements", auth, async (req, res) => {
       quartier,
     } = req.body;
 
+    const localPhone = normalizeLocalPhone(telephone);
     if (!nom || !telephone || !decodeur || !formule) {
-      return res.status(400).json({ message: "Nom, telephone, decodeur et formule sont obligatoires" });
+      return res.status(400).json({ message: "Nom, téléphone, décodeur et formule sont obligatoires" });
+    }
+    if (!validHumanText(nom)) return res.status(400).json({ message: "Nom invalide." });
+    if (!/^\d{9}$/.test(localPhone)) return res.status(400).json({ message: "Le téléphone doit contenir exactement 9 chiffres." });
+    if (!/^\d+$/.test(String(decodeur))) return res.status(400).json({ message: "Numéro de décodeur invalide." });
+    if (Number(duree) < 1 || Number(duree) > 12) return res.status(400).json({ message: "La durée doit être comprise entre 1 et 12 mois." });
+    if ((ville && !validHumanText(ville)) || (quartier && !validHumanText(quartier))) {
+      return res.status(400).json({ message: "Ville ou quartier invalide." });
     }
 
     connection = await db.getConnection();
@@ -103,7 +135,7 @@ router.post("/abonnements", auth, async (req, res) => {
       offreCode: formule,
       duree: Number(duree) || 1,
       nomAbonne: nom,
-      telephoneAbonne: formatPhone(telephone),
+      telephoneAbonne: formatPhone(localPhone),
       adresse,
       ville,
       quartier,
@@ -131,7 +163,7 @@ router.post("/abonnements", auth, async (req, res) => {
     await connection.query(
       `INSERT INTO abonnements (nom, telephone, decodeur, adresse, ville, quartier, partner_id)
        VALUES (?, ?, ?, ?, ?, ?, ?)`,
-      [nom, telephone, decodeur, adresse, ville, quartier, userId]
+      [nom, localPhone, decodeur, adresse, ville, quartier, userId]
     );
 
     await connection.query(
@@ -150,28 +182,29 @@ try {
   // table absente → on garde 2000
 }
 const PRIX_FORMULES_BACKEND_LOCAL = {
-  "ACDD": 5000, "EVDD": 10500, "ACPDD": 15000, "EVPDD": 20000, "TCADD": 28000
+
 };
-const getFormulePrice = (code) => PRIX_FORMULES_BACKEND_LOCAL[code] || 0;
+const getFormulePrice = async (code) => (await getFormulaPrice(connection, code)) || PRIX_FORMULES_BACKEND_LOCAL[code] || 0;
 
 // ✅ Ajouter aussi la commission du forfait (4% du prix)
 const PRIX_FORMULES = {
   "ACDD": 5000, "EVDD": 10500, "ACPDD": 15000,
-  "EVPDD": 20000, "TCADD": 28000
+
 };
-const commissionForfait = Math.round((PRIX_FORMULES[formule] || 5000) * 0.04);
+const prixForfait = await getFormulePrice(formule);
+const commissionForfait = Math.round((prixForfait || 5000) * 0.04);
 const commissionTotale = commissionAbonnement + commissionForfait;
 
 await connection.query(
   "UPDATE users SET commission_balance = COALESCE(commission_balance,0) + ?, commission_total = COALESCE(commission_total,0) + ? WHERE id = ?",
   [commissionTotale, commissionTotale, userId]
 );
-    const montantAbonnement = (getFormulePrice(formule) || 5000) * (Number(duree) || 1);
+    const montantAbonnement = (prixForfait || 5000) * (Number(duree) || 1);
     const [hist] = await connection.query(
       `INSERT INTO reabonnements
          (users_id, numero_abonne, formule, montant, duree, telephoneAbonne, commission, type_operation, created_at)
        VALUES (?, ?, ?, ?, ?, ?, ?, 'abonnement', NOW())`,
-      [userId, apiResponse.data?.numabo || decodeur, formule, montantAbonnement, Number(duree) || 1, telephone, commissionTotale]
+      [userId, apiResponse.data?.numabo || decodeur, formule, montantAbonnement, Number(duree) || 1, localPhone, commissionTotale]
     );
     await calculateAdminCommission(connection, {
       reabonnementId: hist.insertId,
@@ -272,10 +305,10 @@ fs.writeFileSync(path.join(invoicesDir, `facture_${factureId}.html`), html, "utf
 const factureUrl = `/invoices/facture_${factureId}.html`;
     return res.json({
       success: true,
-      message: isTestMode() ? "[TEST] Abonnement simule avec succes" : "Abonnement effectue avec succes",
-      test_mode: isTestMode(),
+      message: (await isTestMode()) ? "[TEST] Abonnement simule avec succes" : "Abonnement effectue avec succes",
+      test_mode: await isTestMode(),
       reference: apiResponse.data?.reference,
-      facture_url: factureUrl, 
+      facture_url: factureUrl,
       commission: commissionTotale,
     });
   } catch (error) {

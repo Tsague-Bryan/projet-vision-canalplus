@@ -1,4 +1,5 @@
 import { useState } from "react";
+import { Banknote, MessageCircle } from "lucide-react";
 import Navbar from "../components/Navbar";
 import Footer from "../components/Footer";
 import telecommandeImg from "../assets/tlc.jpg";
@@ -38,7 +39,7 @@ const CommandeModal = ({ produit, onClose }) => {
       `📞 Téléphone : ${form.telephone}\n` +
       `📍 Ville : ${form.ville}\n` +
       `🔢 Quantité : ${form.quantite}\n` +
-      `💰 Prix unitaire : ${produit.price}\n\n` +
+      `Prix unitaire : ${produit.price}\n\n` +
       `Je souhaite passer commande, merci de me contacter.`
     );
 
@@ -146,10 +147,7 @@ const CommandeModal = ({ produit, onClose }) => {
           className="flex items-center justify-center gap-2 w-full bg-primary text-primary-foreground
                      active:scale-95 font-semibold py-4 rounded-lg transition-all text-sm shadow-sm hover:bg-primary/90"
         >
-          <svg width="18" height="18" viewBox="0 0 24 24" fill="currentColor">
-            <path d="M17.472 14.382c-.297-.149-1.758-.867-2.03-.967-.273-.099-.471-.148-.67.15-.197.297-.767.966-.94 1.164-.173.199-.347.223-.644.075-.297-.15-1.255-.463-2.39-1.475-.883-.788-1.48-1.761-1.653-2.059-.173-.297-.018-.458.13-.606.134-.133.298-.347.446-.52.149-.174.198-.298.298-.497.099-.198.05-.371-.025-.52-.075-.149-.669-1.612-.916-2.207-.242-.579-.487-.5-.669-.51-.173-.008-.371-.01-.57-.01-.198 0-.52.074-.792.372-.272.297-1.04 1.016-1.04 2.479 0 1.462 1.065 2.875 1.213 3.074.149.198 2.096 3.2 5.077 4.487.709.306 1.262.489 1.694.625.712.227 1.36.195 1.871.118.571-.085 1.758-.719 2.006-1.413.248-.694.248-1.289.173-1.413-.074-.124-.272-.198-.57-.347z" />
-            <path d="M12 0C5.373 0 0 5.373 0 12c0 2.123.556 4.116 1.528 5.845L.057 23.428a.5.5 0 0 0 .515.572l5.76-1.511A11.943 11.943 0 0 0 12 24c6.627 0 12-5.373 12-12S18.627 0 12 0zm0 22a9.956 9.956 0 0 1-5.073-1.385l-.362-.214-3.755.984.999-3.648-.235-.374A9.953 9.953 0 0 1 2 12C2 6.477 6.477 2 12 2s10 4.477 10 10-4.477 10-10 10z" />
-          </svg>
+          <MessageCircle className="h-4 w-4" />
           Commander via WhatsApp
         </button>
       </div>
@@ -166,7 +164,7 @@ export default function Boutique() {
       description: "Télécommande Canal+ universelle.",
       price: "2 000 FCFA",
       image: telecommandeImg,
-      whatsapp: "https://wa.me/237656253864?text=Je%20veux%20acheter%20une%20Télécommande",
+      whatsapp: "https://wa.me/237695225823?text=Je%20veux%20acheter%20une%20Télécommande",
       formulaire: false,
     },
     {
@@ -174,7 +172,7 @@ export default function Boutique() {
       description: "Chargeur officiel pour décodeur Canal+.",
       price: "5 000 FCFA",
       image: chargeurImg,
-      whatsapp: "https://wa.me/237656253864?text=Je%20veux%20acheter%20un%20Chargeur",
+      whatsapp: "https://wa.me/237695225823?text=Je%20veux%20acheter%20un%20Chargeur",
       formulaire: false,
     },
     {
@@ -182,7 +180,7 @@ export default function Boutique() {
       description: "Câble HDMI haute qualité pour décodeur.",
       price: "1 000 FCFA",
       image: hdmiImg,
-      whatsapp: "https://wa.me/237656253864?text=Je%20veux%20acheter%20un%20Cordon%20HDMI",
+      whatsapp: "https://wa.me/237695225823?text=Je%20veux%20acheter%20un%20Cordon%20HDMI",
       formulaire: false,
     },
     {
@@ -190,7 +188,7 @@ export default function Boutique() {
       description: "Tête LNB pour parabole Canal+.",
       price: "5 000 FCFA",
       image: lnbImg,
-      whatsapp: "https://wa.me/237656253864?text=Je%20veux%20acheter%20une%20Tête%20LNB",
+      whatsapp: "https://wa.me/237695225823?text=Je%20veux%20acheter%20une%20Tête%20LNB",
       formulaire: false,
     },
     {
@@ -198,7 +196,7 @@ export default function Boutique() {
       description: "Câble coaxial pour installation Canal+.",
       price: "5 000 FCFA",
       image: cableImg,
-      whatsapp: "https://wa.me/237656253864?text=Je%20veux%20acheter%20un%20Câble",
+      whatsapp: "https://wa.me/237695225823?text=Je%20veux%20acheter%20un%20Câble",
       formulaire: false,
     },
     {
@@ -206,7 +204,7 @@ export default function Boutique() {
       description: "Protection électrique pour décodeur Canal+.",
       price: "3 000 FCFA",
       image: parafoudreImg,
-      whatsapp: "https://wa.me/237656253864?text=Je%20veux%20acheter%20un%20Parafoudre",
+      whatsapp: "https://wa.me/237695225823?text=Je%20veux%20acheter%20un%20Parafoudre",
       formulaire: false,
     },
     {
@@ -214,7 +212,7 @@ export default function Boutique() {
       description: "Kit complet d'installation Canal+.",
       price: "3 000 FCFA",
       image: KitCanal,
-      whatsapp: "https://wa.me/237656253864?text=Je%20veux%20acheter%20un%20Kit%20Canal%2B",
+      whatsapp: "https://wa.me/237695225823?text=Je%20veux%20acheter%20un%20Kit%20Canal%2B",
       formulaire: true,
     },
     {
@@ -222,7 +220,7 @@ export default function Boutique() {
       description: "Decodeur HD.",
       price: "3 000 FCFA",
       image: Decodeur,
-      whatsapp: "https://wa.me/237656253864?text=Je%20veux%20acheter%20un%20Kit%20Canal%2B",
+      whatsapp: "https://wa.me/237695225823?text=Je%20veux%20acheter%20un%20Kit%20Canal%2B",
       formulaire: false,
     },
   ];
@@ -257,7 +255,10 @@ export default function Boutique() {
               <div className="p-6 text-center">
                 <h2 className="text-xl font-semibold mb-2 text-foreground">{produit.title}</h2>
                 <p className="text-muted-foreground text-sm">{produit.description}</p>
-                <p className="text-lg font-bold text-foreground mt-2">{produit.price}</p>
+                <p className="mt-2 inline-flex items-center justify-center gap-1.5 text-lg font-bold text-foreground">
+                  <Banknote className="h-5 w-5 text-primary" />
+                  {produit.price}
+                </p>
 
                 <button
                   onClick={() => handleAchat(produit)}
@@ -265,10 +266,7 @@ export default function Boutique() {
                              active:scale-95 text-primary-foreground px-4 py-2 rounded-lg text-sm font-semibold
                              transition-all"
                 >
-                  <svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor">
-                    <path d="M17.472 14.382c-.297-.149-1.758-.867-2.03-.967-.273-.099-.471-.148-.67.15-.197.297-.767.966-.94 1.164-.173.199-.347.223-.644.075-.297-.15-1.255-.463-2.39-1.475-.883-.788-1.48-1.761-1.653-2.059-.173-.297-.018-.458.13-.606.134-.133.298-.347.446-.52.149-.174.198-.298.298-.497.099-.198.05-.371-.025-.52-.075-.149-.669-1.612-.916-2.207-.242-.579-.487-.5-.669-.51a2.79 2.79 0 0 0-.57-.01c-.198 0-.52.074-.792.372-.272.297-1.04 1.016-1.04 2.479 0 1.462 1.065 2.875 1.213 3.074.149.198 2.096 3.2 5.077 4.487.709.306 1.262.489 1.694.625.712.227 1.36.195 1.871.118.571-.085 1.758-.719 2.006-1.413.248-.694.248-1.289.173-1.413-.074-.124-.272-.198-.57-.347z" />
-                    <path d="M12 0C5.373 0 0 5.373 0 12c0 2.123.556 4.116 1.528 5.845L.057 23.428a.5.5 0 0 0 .515.572l5.76-1.511A11.943 11.943 0 0 0 12 24c6.627 0 12-5.373 12-12S18.627 0 12 0zm0 22a9.956 9.956 0 0 1-5.073-1.385l-.362-.214-3.755.984.999-3.648-.235-.374A9.953 9.953 0 0 1 2 12C2 6.477 6.477 2 12 2s10 4.477 10 10-4.477 10-10 10z" />
-                  </svg>
+                  <MessageCircle className="h-4 w-4" />
                   Achat via WhatsApp
                 </button>
               </div>

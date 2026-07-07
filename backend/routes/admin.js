@@ -11,6 +11,9 @@ const {
   updateCommissionRule,
   ensureCommissionTables,
   getAdminCommissionTotal,
+  getFormulaCatalog,
+  adjustCashbox,
+  getCashboxMovements,
 } = require("../utils/commissionEngine");
 
 const adminOnly = (req, res, next) => {
@@ -45,6 +48,8 @@ const upload = multer({
   },
 });
 
+const { repairInvoiceHtml } = require("../utils/invoiceHtml");
+
 const ensureWalletOperationsTable = async () => {
   await pool.query(`
     CREATE TABLE IF NOT EXISTS wallet_operations (
@@ -73,7 +78,7 @@ router.post("/partner/upload-avatar", auth, upload.single("avatar"), async (req,
 });
 
 // ── Transfert commissions → portefeuille ──────────────────────────────────────
-// ✅ FIX JSON.parse : on s'assure que la réponse renvoie bien du JSON propre
+//  FIX JSON.parse : on s'assure que la réponse renvoie bien du JSON propre
 router.post("/partner/transfer-commission", auth, async (req, res) => {
   try {
     const [[user]] = await pool.query(
@@ -98,7 +103,7 @@ router.post("/partner/transfer-commission", auth, async (req, res) => {
 
     if (req.io) req.io.emit(`partner_dashboard_update_${req.user.id}`, { type: "commission_transferred", amount });
 
-    // ✅ Réponse JSON complète et propre
+    //  Réponse JSON complète et propre
     return res.json({
       success:            true,
       message:            `${amount.toLocaleString("fr-FR")} FCFA transférés dans votre portefeuille avec succès.`,
@@ -123,6 +128,42 @@ const ensureRechargeDateColumn = async () => {
   }
 };
 ensureRechargeDateColumn();
+
+// ── Vérification table app_config et clés de base ──────────────────────────────
+const ensureAppConfig = async () => {
+  try {
+    await pool.query(`
+      CREATE TABLE IF NOT EXISTS app_config (
+        cle VARCHAR(100) PRIMARY KEY,
+        valeur VARCHAR(255) NOT NULL
+      )
+    `);
+    await pool.query("INSERT IGNORE INTO app_config (cle, valeur) VALUES ('admin_whatsapp', '237695225823')");
+    await pool.query("INSERT IGNORE INTO app_config (cle, valeur) VALUES ('fujisat_user', ?)", [process.env.FUJISAT_USER || 'FORAMAAPI']);
+    await pool.query("INSERT IGNORE INTO app_config (cle, valeur) VALUES ('fujisat_pass', ?)", [process.env.FUJISAT_PASS || 'admin123']);
+    await pool.query("INSERT IGNORE INTO app_config (cle, valeur) VALUES ('fujisat_test_mode', ?)", [String(process.env.FUJISAT_TEST_MODE || 'true')]);
+    await pool.query("INSERT IGNORE INTO app_config (cle, valeur) VALUES ('admin_gain_rate', '6')");
+  } catch (err) {
+    console.warn("Impossible d'assurer la configuration de base app_config:", err.message);
+  }
+};
+ensureAppConfig();
+
+router.get("/invoice-html/:file", auth, async (req, res) => {
+  try {
+    const file = path.basename(String(req.params.file || ""));
+    if (!/^facture_[\w-]+\.html$/i.test(file)) {
+      return res.status(400).send("Facture invalide");
+    }
+    const fullPath = path.join(__dirname, "../invoices", file);
+    if (!fs.existsSync(fullPath)) return res.status(404).send("Facture introuvable");
+    const html = fs.readFileSync(fullPath, "utf8");
+    return res.set("Content-Type", "text/html; charset=utf-8").send(repairInvoiceHtml(html));
+  } catch (err) {
+    console.error("GET /invoice-html:", err);
+    return res.status(500).send("Erreur serveur");
+  }
+});
 
 // ── Notifications partenaire ──────────────────────────────────────────────────
 router.get("/partner/notifications", auth, async (req, res) => {
@@ -178,9 +219,10 @@ router.post("/admin/notifications", auth, upload.single("capture"), async (req, 
       if (u.length > 0) partnerName = `${u[0].prenom} ${u[0].name}`;
     }
 
-    const msg = `💳 ${partnerName} demande une recharge de ${Number(montant).toLocaleString()} FCFA via ${moyen_paiement}`;
+    const msg = ` ${partnerName} demande une recharge de ${Number(montant).toLocaleString()} FCFA via ${moyen_paiement}`;
     await pool.query("INSERT INTO notifications (type, message, created_at) VALUES (?, ?, NOW())", ["recharge", msg]);
     if (req.io) req.io.emit("new_notification", { type: "recharge", message: msg, demandeId: result.insertId });
+    if (req.io) req.io.emit(`partner_dashboard_update_${userId}`, { type: "recharge_created", demandeId: result.insertId });
 
     return res.json({ success: true, message: "Demande envoyée", demandeId: result.insertId });
   } catch (err) {
@@ -189,7 +231,7 @@ router.post("/admin/notifications", auth, upload.single("capture"), async (req, 
   }
 });
 
-// ✅ GET recharges avec rejected_count + filtre date + pagination
+//  GET recharges avec rejected_count + filtre date + pagination
 router.get("/admin/recharges", auth, adminOnly, async (req, res) => {
   try {
     const { date, page } = req.query;
@@ -234,13 +276,13 @@ router.post("/admin/recharges/:id/valider", auth, adminOnly, async (req, res) =>
     await pool.query("UPDATE demandes_recharge SET statut = 'validee' WHERE id = ?", [req.params.id]);
     await pool.query(
       "INSERT INTO notifications (user_id, type, message) VALUES (?, ?, ?)",
-      [d.user_id, 'recharge_validee', `✅ Votre recharge de ${Number(d.montant).toLocaleString()} FCFA a été validée.`]
+      [d.user_id, 'recharge_validee', ` Votre recharge de ${Number(d.montant).toLocaleString()} FCFA a été validée.`]
     );
     if (req.io) {
-      req.io.emit("new_notification", { type: "recharge_validee", userId: d.user_id, message: `✅ Recharge de ${Number(d.montant).toLocaleString()} FCFA validée` });
+      req.io.emit("new_notification", { type: "recharge_validee", userId: d.user_id, message: ` Recharge de ${Number(d.montant).toLocaleString()} FCFA validée` });
       req.io.emit("admin_dashboard_update", { type: "recharge_validee", user_id: d.user_id });
       req.io.emit(`partner_dashboard_update_${d.user_id}`, { type: "recharge_validee" });
-      req.io.emit(`partner_notification_${d.user_id}`, { message: `✅ Votre recharge de ${Number(d.montant).toLocaleString()} FCFA a été validée.` });
+      req.io.emit(`partner_notification_${d.user_id}`, { message: ` Votre recharge de ${Number(d.montant).toLocaleString()} FCFA a été validée.` });
     }
     return res.json({ success: true, message: "Recharge validée" });
   } catch (err) { return res.status(500).json({ error: "Erreur serveur" }); }
@@ -252,9 +294,9 @@ router.post("/admin/recharges/:id/rejeter", auth, adminOnly, async (req, res) =>
     if (d) {
       await pool.query(
         "INSERT INTO notifications (user_id, type, message) VALUES (?, ?, ?)",
-        [d.user_id, 'recharge_rejetee', `❌ Votre demande de recharge de ${Number(d.montant).toLocaleString()} FCFA a été rejetée.`]
+        [d.user_id, 'recharge_rejetee', ` Votre demande de recharge de ${Number(d.montant).toLocaleString()} FCFA a été rejetée.`]
       );
-      if (req.io) req.io.emit(`partner_notification_${d.user_id}`, { message: `❌ Votre recharge de ${Number(d.montant).toLocaleString()} FCFA a été rejetée.` });
+      if (req.io) req.io.emit(`partner_notification_${d.user_id}`, { message: ` Votre recharge de ${Number(d.montant).toLocaleString()} FCFA a été rejetée.` });
     }
     await pool.query("UPDATE demandes_recharge SET statut = 'rejetee' WHERE id = ?", [req.params.id]);
     return res.json({ success: true });
@@ -292,7 +334,7 @@ router.post("/admin/retraits-wallet/:id/valider", auth, adminOnly, async (req, r
     const d = rows[0];
     await pool.query("UPDATE users SET wallet_balance = wallet_balance - ? WHERE id = ? AND wallet_balance >= ?", [d.montant, d.user_id, d.montant]);
     await pool.query("UPDATE demandes_retrait SET statut = 'approved' WHERE id = ?", [req.params.id]);
-    if (req.io) req.io.emit("new_notification", { type: "retrait_valide", userId: d.user_id, message: `✅ Retrait de ${Number(d.montant).toLocaleString()} FCFA validé` });
+    if (req.io) req.io.emit("new_notification", { type: "retrait_valide", userId: d.user_id, message: ` Retrait de ${Number(d.montant).toLocaleString()} FCFA validé` });
     return res.json({ success: true });
   } catch (err) { return res.status(500).json({ error: "Erreur serveur" }); }
 });
@@ -313,7 +355,7 @@ router.get('/partners', auth, adminOnly, async (req, res) => {
   try {
     const [rows] = await pool.query(
       `SELECT id, name, prenom, email, role, status, structure, pays, ville, quartier, telephone, codePromo,
-              photo_url,
+              photo_url, created_at,
               COALESCE(wallet_balance, 0) AS wallet_balance,
               COALESCE(commission_balance, 0) AS commission_balance,
               COALESCE(commission_total, 0) AS commission_total,
@@ -327,17 +369,29 @@ router.get('/partners', auth, adminOnly, async (req, res) => {
 router.get('/partners/pending', auth, adminOnly, async (req, res) => {
   try {
     const [rows] = await pool.query(
-      "SELECT id, name, prenom, email, structure, pays, ville, quartier, telephone, codePromo FROM users WHERE role='partner' AND status='pending'"
+      "SELECT id, name, prenom, email, structure, pays, ville, quartier, telephone, codePromo, created_at FROM users WHERE role='partner' AND status='pending'"
     );
     res.json(rows);
   } catch (err) { res.status(500).json({ error: "Erreur serveur" }); }
 });
 
-// ✅ FIX stats : la carte "Commissions générées" admin = 6% de tous les réabonnements
+//  FIX stats : la carte "Commissions générées" admin = 6% de tous les réabonnements
 router.get('/partners/stats', auth, adminOnly, async (req, res) => {
   try {
     const [[{ total }]]            = await pool.query("SELECT COUNT(*) AS total FROM reabonnements");
-    const [[{ admin_gains }]]      = await pool.query("SELECT COALESCE(SUM(montant * 0.06), 0) AS admin_gains FROM reabonnements");
+    const [[rateRow]]              = await pool.query("SELECT valeur FROM app_config WHERE cle = 'admin_gain_rate' LIMIT 1");
+    const adminGainRate            = Number(rateRow?.valeur || 6);
+    const [[{ admin_gains }]]      = await pool.query("SELECT COALESCE(SUM(montant * ? / 100), 0) AS admin_gains FROM reabonnements", [adminGainRate]);
+    await ensureWalletOperationsTable();
+    const [[{ total_recharges }]]  = await pool.query(`
+      SELECT COALESCE(SUM(total), 0) AS total_recharges
+      FROM (
+        SELECT montant AS total FROM demandes_recharge WHERE statut = 'validee'
+        UNION ALL
+        SELECT montant AS total FROM wallet_operations
+        WHERE statut IN ('validee', 'approved') AND type IN ('wallet_credit', 'admin_credit')
+      ) recharges
+    `);
     const [reabonnementsMois]      = await pool.query("SELECT MONTH(created_at) AS mois, COUNT(*) AS total FROM reabonnements GROUP BY mois");
     const [[{ total_commission }]] = await pool.query("SELECT COALESCE(SUM(commission), 0) AS total_commission FROM reabonnements");
 
@@ -346,8 +400,67 @@ router.get('/partners/stats', auth, adminOnly, async (req, res) => {
       reabonnementsMois,
       commissions:        total_commission,
       admin_gains:        Math.round(Number(admin_gains)),
+      admin_gain_rate:     adminGainRate,
+      total_recharges:     Number(total_recharges),
     });
   } catch (err) { res.status(500).json({ error: "Erreur serveur" }); }
+});
+
+router.get("/admin/reports/operations.csv", auth, adminOnly, async (req, res) => {
+  try {
+    const month = req.query.month ? Number(req.query.month) : null;
+    const year = req.query.year ? Number(req.query.year) : null;
+    const params = [];
+    let where = "";
+    if (month && year) {
+      where = "WHERE MONTH(r.created_at) = ? AND YEAR(r.created_at) = ?";
+      params.push(month, year);
+    } else if (year) {
+      where = "WHERE YEAR(r.created_at) = ?";
+      params.push(year);
+    }
+    const [rows] = await pool.query(
+      `SELECT r.id, COALESCE(r.type_operation, 'reabonnement') AS type_operation,
+              r.numero_abonne, r.formule, r.montant, r.duree, r.telephoneAbonne,
+              r.commission, r.created_at,
+              u.name, u.prenom, u.email, u.telephone, u.structure
+       FROM reabonnements r
+       LEFT JOIN users u ON u.id = r.users_id
+       ${where}
+       ORDER BY r.created_at DESC`,
+      params
+    );
+    const headers = [
+      "ID", "Date", "Type", "Numero abonne", "Formule", "Montant", "Duree",
+      "Telephone client", "Commission", "Partenaire", "Email partenaire",
+      "Telephone partenaire", "Structure"
+    ];
+    const escapeCsv = (value) => `"${String(value ?? "").replace(/"/g, '""')}"`;
+    const lines = [
+      headers.map(escapeCsv).join(";"),
+      ...rows.map((r) => [
+        r.id,
+        r.created_at ? new Date(r.created_at).toISOString().slice(0, 19).replace("T", " ") : "",
+        r.type_operation,
+        r.numero_abonne,
+        r.formule,
+        Number(r.montant || 0),
+        r.duree,
+        r.telephoneAbonne,
+        Number(r.commission || 0),
+        `${r.prenom || ""} ${r.name || ""}`.trim(),
+        r.email,
+        r.telephone,
+        r.structure,
+      ].map(escapeCsv).join(";")),
+    ];
+    res.setHeader("Content-Type", "text/csv; charset=utf-8");
+    res.setHeader("Content-Disposition", "attachment; filename=rapport_operations.csv");
+    return res.send(`\uFEFF${lines.join("\n")}`);
+  } catch (err) {
+    console.error("GET operations report:", err);
+    return res.status(500).json({ error: "Erreur serveur" });
+  }
 });
 
 router.put('/partners/:id', auth, adminOnly, async (req, res) => {
@@ -383,8 +496,28 @@ router.put('/partners/:id/approve', auth, adminOnly, async (req, res) => {
   try {
     await pool.query("UPDATE users SET status='approved' WHERE id=?", [req.params.id]);
     // Notifier le partenaire
-    await pool.query("INSERT INTO notifications (user_id, type, message) VALUES (?, ?, ?)", [req.params.id, 'compte_approuve', '✅ Votre compte partenaire a été approuvé !']);
-    if (req.io) req.io.emit(`partner_notification_${req.params.id}`, { message: '✅ Votre compte partenaire a été approuvé !' });
+    await pool.query("INSERT INTO notifications (user_id, type, message) VALUES (?, ?, ?)", [req.params.id, 'compte_approuve', ' Votre compte partenaire a été approuvé !']);
+    if (req.io) {
+      req.io.emit(`partner_notification_${req.params.id}`, { message: ' Votre compte partenaire a été approuvé !' });
+      try {
+        const [rows] = await pool.query(
+          `SELECT id, name, prenom, email, role, status, structure, pays, ville, quartier, telephone, codePromo, photo_url, created_at,
+                  COALESCE(wallet_balance, 0) AS wallet_balance,
+                  COALESCE(commission_balance, 0) AS commission_balance,
+                  COALESCE(commission_total, 0) AS commission_total,
+                  COALESCE(balance_actif, 0) AS balance_actif
+           FROM users WHERE id = ?`,
+          [req.params.id]
+        );
+        const updatedUser = rows && rows[0] ? rows[0] : null;
+        if (updatedUser) {
+          req.io.emit('admin_dashboard_update', { type: 'partner_approved', partner: updatedUser });
+          req.io.emit('partners:updated', updatedUser);
+        }
+      } catch (e) {
+        console.warn('Emitting partner approved failed:', e.message);
+      }
+    }
     res.json({ message: "Validé" });
   } catch (err) { res.status(500).json({ error: "Erreur serveur" }); }
 });
@@ -392,8 +525,8 @@ router.put('/partners/:id/approve', auth, adminOnly, async (req, res) => {
 router.put('/partners/:id/reject', auth, adminOnly, async (req, res) => {
   try {
     await pool.query("UPDATE users SET status='rejected' WHERE id=?", [req.params.id]);
-    await pool.query("INSERT INTO notifications (user_id, type, message) VALUES (?, ?, ?)", [req.params.id, 'compte_rejete', '❌ Votre demande de compte partenaire a été rejetée.']);
-    if (req.io) req.io.emit(`partner_notification_${req.params.id}`, { message: '❌ Votre demande de compte partenaire a été rejetée.' });
+    await pool.query("INSERT INTO notifications (user_id, type, message) VALUES (?, ?, ?)", [req.params.id, 'compte_rejete', ' Votre demande de compte partenaire a été rejetée.']);
+    if (req.io) req.io.emit(`partner_notification_${req.params.id}`, { message: ' Votre demande de compte partenaire a été rejetée.' });
     res.json({ message: "Rejeté" });
   } catch (err) { res.status(500).json({ error: "Erreur serveur" }); }
 });
@@ -402,36 +535,113 @@ router.post("/partners", auth, adminOnly, async (req, res) => {
   const { name, prenom, structure, pays, ville, quartier, telephone, codePromo, email, password } = req.body;
   try {
     const hashedPassword = await bcrypt.hash(password, 10);
-    await pool.query(
+    const [result] = await pool.query(
       "INSERT INTO users (name,prenom,structure,pays,ville,quartier,telephone,email,password,codePromo,role,status) VALUES (?,?,?,?,?,?,?,?,?,?,'partner','pending')",
       [name, prenom, structure, pays, ville, quartier, telephone, email, hashedPassword, codePromo]
     );
+    const insertedId = result.insertId;
     const msg = `Nouvelle inscription de ${prenom} ${name}`;
     await pool.query("INSERT INTO notifications (type, message) VALUES (?, ?)", ['inscription', msg]);
-    if (req.io) req.io.emit("new_notification", { type: 'inscription', message: msg });
+    if (req.io) {
+      req.io.emit("new_notification", { type: 'inscription', message: msg });
+      try {
+        const [rows] = await pool.query(
+          `SELECT id, name, prenom, email, role, status, structure, pays, ville, quartier, telephone, codePromo, photo_url, created_at,
+                  COALESCE(wallet_balance, 0) AS wallet_balance,
+                  COALESCE(commission_balance, 0) AS commission_balance,
+                  COALESCE(commission_total, 0) AS commission_total,
+                  COALESCE(balance_actif, 0) AS balance_actif
+           FROM users WHERE id = ?`,
+          [insertedId]
+        );
+        const newUser = rows && rows[0] ? rows[0] : null;
+        if (newUser) {
+          req.io.emit('admin_dashboard_update', { type: 'partner_created', partner: newUser });
+          req.io.emit('partners:created', newUser);
+        }
+      } catch (e) {
+        console.warn('Emitting partner created failed:', e.message);
+      }
+    }
     res.json({ message: "Ajouté" });
   } catch (err) { res.status(500).json({ error: "Erreur serveur" }); }
 });
 
 router.post("/partners/:id/credit", auth, adminOnly, async (req, res) => {
   const { amount } = req.body;
-  if (!amount || isNaN(amount) || Number(amount) <= 0) return res.status(400).json({ message: "Montant invalide" });
+  if (!amount || isNaN(amount) || Number(amount) <= 0) {
+    return res.status(400).json({ message: "Montant invalide" });
+  }
+  const partnerId = Number(req.params.id);
+  const creditAmount = Number(amount);
+  if (!Number.isFinite(partnerId) || partnerId <= 0) {
+    return res.status(400).json({ message: "Identifiant partenaire invalide" });
+  }
+
+  await ensureWalletOperationsTable();
+  const connection = await pool.getConnection();
   try {
-    const [rows] = await pool.execute("SELECT wallet_balance, role FROM users WHERE id = ?", [req.params.id]);
-    if (rows.length === 0) return res.status(404).json({ message: "Introuvable" });
-    if (rows[0].role !== "partner") return res.status(403).json({ message: "Partenaires uniquement" });
-    const newBalance = Number(rows[0].wallet_balance) + Number(amount);
-    await pool.execute("UPDATE users SET wallet_balance = ? WHERE id = ?", [newBalance, req.params.id]);
-    // ✅ Notifier le partenaire de la créditation
-    await pool.query("INSERT INTO notifications (user_id, type, message) VALUES (?, ?, ?)",
-      [req.params.id, 'creditation', `💳 Votre portefeuille a été crédité de ${Number(amount).toLocaleString()} FCFA.`]);
-    if (req.io) {
-      req.io.emit("admin_dashboard_update",                       { type: "wallet_credit", user_id: Number(req.params.id) });
-      req.io.emit(`partner_dashboard_update_${req.params.id}`,   { type: "wallet_credit" });
-      req.io.emit(`partner_notification_${req.params.id}`,       { message: `💳 Votre portefeuille a été crédité de ${Number(amount).toLocaleString()} FCFA.` });
+    await connection.beginTransaction();
+
+    const [[user]] = await connection.query(
+      "SELECT wallet_balance, role FROM users WHERE id = ? FOR UPDATE",
+      [partnerId]
+    );
+    if (!user) {
+      await connection.rollback();
+      return res.status(404).json({ message: "Partenaire introuvable" });
     }
+    if (user.role !== "partner") {
+      await connection.rollback();
+      return res.status(403).json({ message: "Crédit réservé aux comptes partenaires" });
+    }
+
+    await connection.query(
+      "UPDATE users SET wallet_balance = COALESCE(wallet_balance, 0) + ? WHERE id = ?",
+      [creditAmount, partnerId]
+    );
+
+    const [[updated]] = await connection.query(
+      "SELECT wallet_balance FROM users WHERE id = ?",
+      [partnerId]
+    );
+    const newBalance = Number(updated?.wallet_balance || 0);
+
+    const notifMessage = ` Votre portefeuille a été crédité de ${creditAmount.toLocaleString("fr-FR")} FCFA.`;
+    try {
+      await connection.query(
+        "INSERT INTO notifications (user_id, type, message) VALUES (?, ?, ?)",
+        [partnerId, "wallet_credit", notifMessage]
+      );
+    } catch (notifErr) {
+      console.error("🔥 credit notification:", notifErr.message);
+    }
+
+    await connection.query(
+      `INSERT INTO wallet_operations (user_id, type, montant, statut, moyen_paiement, message, created_at)
+       VALUES (?, 'admin_credit', ?, 'validee', 'Crédit admin', ?, NOW())`,
+      [partnerId, creditAmount, notifMessage.trim()]
+    );
+
+    await connection.commit();
+
+    if (req.io) {
+      req.io.emit("admin_dashboard_update", { type: "wallet_credit", user_id: partnerId });
+      req.io.emit(`partner_dashboard_update_${partnerId}`, { type: "wallet_credit" });
+      req.io.emit(`partner_notification_${partnerId}`, { message: notifMessage });
+    }
+
     return res.json({ message: "Crédité", wallet_balance: newBalance });
-  } catch (err) { return res.status(500).json({ message: "Erreur serveur" }); }
+  } catch (err) {
+    await connection.rollback();
+    console.error("🔥 POST /partners/:id/credit:", err);
+    return res.status(500).json({
+      message: "Erreur serveur",
+      error: err.message,
+    });
+  } finally {
+    connection.release();
+  }
 });
 
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -461,7 +671,7 @@ router.post("/decodeurs", auth, adminOnly, async (req, res) => {
     const [exists] = await pool.query("SELECT id FROM decodeurs WHERE numero = ?", [numero]);
     if (exists.length > 0) return res.status(409).json({ message: "Décodeur déjà existant" });
     await pool.query("INSERT INTO decodeurs (numero, partner_id, status) VALUES (?, ?, 'free')", [numero, partner_id]);
-    // ✅ Notifier le partenaire qu'un décodeur lui a été attribué
+    //  Notifier le partenaire qu'un décodeur lui a été attribué
     await pool.query("INSERT INTO notifications (user_id, type, message) VALUES (?, ?, ?)",
       [partner_id, 'nouveau_decodeur', `🖥️ Un nouveau décodeur (${numero}) a été ajouté à votre actif.`]);
     if (req.io) {
@@ -559,7 +769,7 @@ router.post("/admin/balance-toggle-partner/:id", auth, adminOnly, async (req, re
     }
     return res.json({
       success: true, partner_id: partnerId, balance_actif: enabled,
-      message: enabled ? `✅ Retrait activé pour ${rows[0].prenom} ${rows[0].name}` : `🔒 Retrait désactivé`,
+      message: enabled ? ` Retrait activé pour ${rows[0].prenom} ${rows[0].name}` : ` Retrait désactivé`,
     });
   } catch (err) {
     console.error("🔥 balance-toggle-partner:", err);
@@ -569,7 +779,7 @@ router.post("/admin/balance-toggle-partner/:id", auth, adminOnly, async (req, re
 
 // ═══════════════════════════════════════════════════════════════════════════════
 // COMMISSIONS — RÉSUMÉ
-// ✅ FIX : total_commissions affiche le 6% admin (admin_gains), pas les commissions partenaires
+//  FIX : total_commissions affiche le 6% admin (admin_gains), pas les commissions partenaires
 // ═══════════════════════════════════════════════════════════════════════════════
 
 router.get("/admin/commissions-summary", auth, adminOnly, async (req, res) => {
@@ -588,7 +798,7 @@ router.get("/admin/commissions-summary", auth, adminOnly, async (req, res) => {
        ORDER BY COALESCE(u.commission_total, 0) DESC`
     );
 
-    // ✅ admin_gains = 6% du CA total de tous les réabonnements
+    //  admin_gains = 6% du CA total de tous les réabonnements
     const [[{ admin_gains }]] = await pool.query(
       "SELECT COALESCE(SUM(montant * 0.06), 0) AS admin_gains FROM reabonnements"
     );
@@ -603,7 +813,7 @@ router.get("/admin/commissions-summary", auth, adminOnly, async (req, res) => {
 
     return res.json({
       partenaires,
-      total_commissions:          Math.round(Number(admin_gains)),       // ✅ 6% admin dans la carte orange
+      total_commissions:          Math.round(Number(admin_gains)),       //  6% admin dans la carte orange
       total_partner_commissions:  Number(total_partner_commissions),     // commissions partenaires (onglet commissions)
       commissions_attente:        Number(en_attente),
       stats_formules,
@@ -657,6 +867,70 @@ router.get("/partner/commission-rules", auth, async (req, res) => {
     return res.json(rules.map(({ cashbox_amount, ...rule }) => rule));
   }
   catch (err) { return res.status(500).json({ error: "Erreur serveur" }); }
+});
+
+router.get("/formules", auth, async (req, res) => {
+  try {
+    const includeOptions = req.query.includeOptions !== "0";
+    return res.json(await getFormulaCatalog(pool, { includeOptions }));
+  } catch (err) {
+    console.error("GET /formules:", err);
+    return res.status(500).json({ error: "Erreur serveur" });
+  }
+});
+
+router.put("/admin/formules/:code", auth, adminOnly, async (req, res) => {
+  try {
+    const price = Number(req.body?.price);
+    if (!price || price <= 0) return res.status(400).json({ error: "Prix invalide" });
+    const updated = await updateCommissionRule(pool, req.params.code, { price });
+    if (req.io) {
+      req.io.emit("formules_update", updated);
+      req.io.emit("commission_rules_update", updated);
+      req.io.emit("admin_dashboard_update", { type: "formules_update" });
+      req.io.emit("partner_dashboard_update", { type: "formules_update" });
+    }
+    return res.json({ success: true, rule: updated });
+  } catch (err) {
+    console.error("PUT /admin/formules:", err);
+    return res.status(500).json({ error: "Erreur serveur", details: err.message });
+  }
+});
+
+router.post("/admin/commission-rules/:code/cashbox", auth, adminOnly, async (req, res) => {
+  let connection;
+  try {
+    connection = await pool.getConnection();
+    await connection.beginTransaction();
+    const updated = await adjustCashbox(connection, req.params.code, {
+      type: req.body?.type === "withdraw" ? "withdraw" : "add",
+      amount: req.body?.amount,
+      adminId: req.user.id,
+      note: req.body?.note || "",
+    });
+    await connection.commit();
+    if (req.io) {
+      req.io.emit("commission_rules_update", updated);
+      req.io.emit("admin_dashboard_update", { type: "cashbox_update" });
+      req.io.emit("partner_dashboard_update", { type: "commission_rules_update" });
+    }
+    return res.json({ success: true, rule: updated });
+  } catch (err) {
+    if (connection) await connection.rollback();
+    return res.status(400).json({ error: err.message || "Erreur serveur" });
+  } finally {
+    if (connection) connection.release();
+  }
+});
+
+router.get("/admin/commission-cashbox-movements", auth, adminOnly, async (req, res) => {
+  try {
+    const data = await getCashboxMovements(pool, { date: req.query.date });
+    return res.json(data);
+  } catch (err) {
+    console.error("GET cashbox movements:", err);
+    return res.status(500).json({ error: "Erreur serveur" });
+  }
 });
 
 router.put("/admin/commission-rules/:code", auth, adminOnly, async (req, res) => {
@@ -766,4 +1040,72 @@ router.get("/admin/config/commission-abonnement", auth, adminOnly, async (req, r
     return res.json({ valeur: 2000 });
   }
 });
+
+// ── GET /admin/config/settings ──────────────────────────────────────────────
+router.get("/admin/config/settings", auth, adminOnly, async (req, res) => {
+  try {
+    const [rows] = await pool.query("SELECT cle, valeur FROM app_config");
+    const settings = {};
+    rows.forEach(r => {
+      settings[r.cle] = r.valeur;
+    });
+    if (!settings.admin_whatsapp) settings.admin_whatsapp = "237695225823";
+    if (!settings.fujisat_user) settings.fujisat_user = process.env.FUJISAT_USER || "FORAMAAPI";
+    if (!settings.fujisat_pass) settings.fujisat_pass = process.env.FUJISAT_PASS || "admin123";
+    if (!settings.fujisat_test_mode) settings.fujisat_test_mode = String(process.env.FUJISAT_TEST_MODE || "true");
+    if (!settings.admin_gain_rate) settings.admin_gain_rate = "6";
+    if (!settings.commission_abonnement) settings.commission_abonnement = "2000";
+
+    return res.json(settings);
+  } catch (err) {
+    return res.status(500).json({ error: "Erreur serveur" });
+  }
+});
+
+// ── PUT /admin/config/settings ──────────────────────────────────────────────
+router.put("/admin/config/settings", auth, adminOnly, async (req, res) => {
+  const { admin_whatsapp, fujisat_user, fujisat_pass } = req.body;
+  const { fujisat_test_mode, admin_gain_rate } = req.body;
+  try {
+    if (admin_whatsapp !== undefined) {
+      await pool.query(
+        "INSERT INTO app_config (cle, valeur) VALUES ('admin_whatsapp', ?) ON DUPLICATE KEY UPDATE valeur = ?",
+        [String(admin_whatsapp), String(admin_whatsapp)]
+      );
+    }
+    if (fujisat_user !== undefined) {
+      await pool.query(
+        "INSERT INTO app_config (cle, valeur) VALUES ('fujisat_user', ?) ON DUPLICATE KEY UPDATE valeur = ?",
+        [String(fujisat_user), String(fujisat_user)]
+      );
+    }
+    if (fujisat_pass !== undefined) {
+      await pool.query(
+        "INSERT INTO app_config (cle, valeur) VALUES ('fujisat_pass', ?) ON DUPLICATE KEY UPDATE valeur = ?",
+        [String(fujisat_pass), String(fujisat_pass)]
+      );
+    }
+    if (fujisat_test_mode !== undefined) {
+      await pool.query(
+        "INSERT INTO app_config (cle, valeur) VALUES ('fujisat_test_mode', ?) ON DUPLICATE KEY UPDATE valeur = ?",
+        [String(Boolean(fujisat_test_mode)), String(Boolean(fujisat_test_mode))]
+      );
+    }
+    if (admin_gain_rate !== undefined && !Number.isNaN(Number(admin_gain_rate))) {
+      await pool.query(
+        "INSERT INTO app_config (cle, valeur) VALUES ('admin_gain_rate', ?) ON DUPLICATE KEY UPDATE valeur = ?",
+        [String(admin_gain_rate), String(admin_gain_rate)]
+      );
+    }
+    if (req.io) {
+      req.io.emit("config_update", { admin_whatsapp, fujisat_user, fujisat_pass, fujisat_test_mode, admin_gain_rate });
+      req.io.emit("partner_dashboard_update", { type: "config_update" });
+    }
+    return res.json({ success: true, message: "Paramètres mis à jour avec succès" });
+  } catch (err) {
+    console.error("🔥 PUT /admin/config/settings error:", err);
+    return res.status(500).json({ error: "Erreur serveur" });
+  }
+});
+
 module.exports = router;

@@ -1,5 +1,7 @@
 import { useState } from "react";
 import { useNavigate } from "react-router-dom";
+import Swal from "sweetalert2";
+import { LockKeyhole, LogIn, Mail, UserPlus } from "lucide-react";
 import logo from "../assets/logo.png";
 import { serverUrl } from "../lib/api";
 import { saveSession } from "../lib/session";
@@ -123,7 +125,7 @@ function ForgotPassword({ onBack }) {
       {/* Succès global */}
       {success && (
         <div className="bg-green-50 border border-green-200 rounded-xl p-4 text-center">
-          <p className="text-green-700 font-semibold text-sm">✅ {success}</p>
+          <p className="text-green-700 font-semibold text-sm"> {success}</p>
         </div>
       )}
 
@@ -277,7 +279,7 @@ function LoginForm() {
 
       if (!response.ok || !data.token) {
         setLoadingLogin(false);
-        alert(data.message || data.error || "Connexion impossible");
+        Swal.fire({ title: "Erreur de connexion", text: data.message || data.error || "Connexion impossible", icon: "error", confirmButtonColor: "#e53935" });
         return;
       }
 
@@ -285,21 +287,24 @@ function LoginForm() {
       setLoadingMessage("Préparation de votre espace...");
       await new Promise(resolve => setTimeout(resolve, 900));
 
-      if      (data.role === "partner") navigate("/partner/dashboard");
-      else if (data.role === "admin")   navigate("/admin/dashboard");
-      else { setLoadingLogin(false); alert("Rôle utilisateur inconnu"); }
+      if      (data.role === "partner") navigate("/partner/dashboard", { replace: true });
+      else if (data.role === "admin")   navigate("/admin/dashboard", { replace: true });
+      else { setLoadingLogin(false); Swal.fire({ title: "Erreur", text: "Rôle utilisateur inconnu", icon: "error", confirmButtonColor: "#e53935" }); }
     } catch (error) {
       console.error("Erreur connexion :", error);
       setLoadingLogin(false);
-      alert("Impossible de se connecter au serveur. Vérifiez que le backend est lancé.");
+      Swal.fire({ title: "Erreur réseau", text: "Veuillez vérifier votre connexion et réessayer", icon: "error", confirmButtonColor: "#e53935" });
     }
   };
 
   // ── Affichage page Forgot Password ────────────────────────────────────────
   if (showForgot) {
     return (
-      <div className="flex items-center justify-center min-h-screen bg-background px-4">
-        <div className="bg-card w-full max-w-md rounded-2xl p-8 border border-border shadow-2xl">
+      <div className="relative flex min-h-screen items-center justify-center overflow-hidden bg-[#f5f7fb] px-4 py-10">
+        <div className="absolute -left-12 -top-10 h-40 w-40 rounded-full bg-slate-950/95" />
+        <div className="absolute -right-10 bottom-8 h-32 w-32 rounded-full bg-slate-800/90" />
+        <div className="absolute left-10 bottom-16 h-8 w-8 rounded-md bg-rose-900/15" />
+        <div className="relative z-10 w-full max-w-md rounded-[1.5rem] bg-white p-8 shadow-[0_22px_70px_rgba(15,23,42,0.16)]">
           <div className="flex justify-center mb-6">
             <img src={logo} alt="Vision Canal+" className="h-16 w-auto"/>
           </div>
@@ -309,9 +314,9 @@ function LoginForm() {
     );
   }
 
-  // ── Affichage formulaire de connexion ─────────────────────────────────────
+  // Login form
   return (
-    <div className="flex items-center justify-center min-h-screen bg-background px-4">
+    <div className="relative min-h-screen overflow-hidden bg-[#f5f7fb] px-4 py-8 sm:px-6 lg:flex lg:items-center lg:justify-center">
 
       {/* Overlay chargement */}
       {loadingLogin && (
@@ -333,68 +338,120 @@ function LoginForm() {
         </div>
       )}
 
-      <form className="bg-card p-8 sm:p-10 rounded-lg shadow-2xl w-full max-w-md border border-border"
-            onSubmit={handleSubmit}>
+      <div className="pointer-events-none absolute -left-16 top-12 h-36 w-36 rounded-full bg-slate-950" />
+      <div className="pointer-events-none absolute left-7 top-28 h-8 w-8 rounded-md bg-rose-900/15" />
+      <div className="pointer-events-none absolute -right-11 bottom-10 h-32 w-32 rounded-full bg-slate-800" />
 
-        <div className="flex justify-center mb-6">
-          <img src={logo} alt="Logo" className="h-20 w-auto"/>
-        </div>
-        <h2 className="text-2xl font-bold text-center text-primary mb-2">Vision Canal+</h2>
-        <p className="text-center text-muted-foreground mb-6">Connectez-vous pour continuer</p>
+      <main className="relative z-10 mx-auto grid w-full max-w-[980px] overflow-hidden rounded-[1.4rem] bg-white shadow-[0_28px_90px_rgba(15,23,42,0.15)] lg:min-h-[560px] lg:grid-cols-[0.92fr_1.08fr]">
+        <section className="flex items-center justify-center px-5 py-10 sm:px-10 lg:py-12">
+          <form
+            className="w-full max-w-[370px] rounded-xl bg-white px-6 py-8 shadow-[0_18px_45px_rgba(15,23,42,0.18)] sm:px-8"
+            onSubmit={handleSubmit}
+          >
+            <div className="mb-7 flex flex-col items-center text-center">
+              <img src={logo} alt="Vision Canal+" className="mb-4 h-14 w-auto" />
+              <h2 className="text-xl font-extrabold text-slate-800">Connectez vous!</h2>
+              <div className="mt-2 h-0.5 w-20 rounded-full bg-slate-800/80" />
+            </div>
 
-        {/* Champ Contact */}
-        <input
-          type="text"
-          placeholder="Email ou téléphone"
-          value={contact}
-          onChange={e => setContact(e.target.value)}
-          className={`w-full mb-4 px-4 py-2.5 border rounded-lg focus:outline-none focus:ring-2 focus:ring-ring bg-background text-foreground ${errors.contact ? "border-destructive" : "border-input"}`}
-        />
+            <label className="mb-4 block">
+              <span className="sr-only">Email ou telephone</span>
+              <div className={[
+                "flex items-center gap-3 border-l-4 bg-white px-4 py-3 shadow-[0_4px_16px_rgba(15,23,42,0.12)] ring-1 ring-slate-100 transition focus-within:ring-2 focus-within:ring-slate-950",
+                errors.contact ? "border-l-red-500" : "border-l-slate-950"
+              ].join(" ")}>
+                <Mail className="h-5 w-5 shrink-0 text-slate-500" />
+                <input
+                  type="text"
+                  placeholder="Entrez votre email ou téléphone"
+                  value={contact}
+                  onChange={e => setContact(e.target.value)}
+                  className="min-w-0 flex-1 bg-transparent text-sm text-slate-800 outline-none placeholder:text-slate-400"
+                />
+              </div>
+            </label>
 
-        {/* Champ Mot de passe avec icône œil */}
-        <div className="relative mb-2">
-          <input
-            type={showPassword ? "text" : "password"}
-            placeholder="Mot de passe"
-            value={password}
-            onChange={e => setPassword(e.target.value)}
-            className={`w-full px-4 py-2.5 pr-12 border rounded-lg focus:outline-none focus:ring-2 focus:ring-ring bg-background text-foreground ${errors.password ? "border-destructive" : "border-input"}`}
-          />
-          <button
-            type="button"
-            onClick={() => setShowPassword(v => !v)}
-            className="absolute right-3 top-1/2 -translate-y-1/2 text-muted-foreground hover:text-foreground transition-colors">
-            {showPassword ? <EyeOpen/> : <EyeOff/>}
-          </button>
-        </div>
+            <label className="mb-4 block">
+              <span className="sr-only">Mot de passe</span>
+              <div className={[
+                "flex items-center gap-3 border-l-4 bg-white px-4 py-3 shadow-[0_4px_16px_rgba(15,23,42,0.12)] ring-1 ring-slate-100 transition focus-within:ring-2 focus-within:ring-slate-950",
+                errors.password ? "border-l-red-500" : "border-l-slate-950"
+              ].join(" ")}>
+                <LockKeyhole className="h-5 w-5 shrink-0 text-slate-500" />
+                <input
+                  type={showPassword ? "text" : "password"}
+                  placeholder="Entrez votre mot de passe"
+                  value={password}
+                  onChange={e => setPassword(e.target.value)}
+                  className="min-w-0 flex-1 bg-transparent text-sm text-slate-800 outline-none placeholder:text-slate-400"
+                />
+                <button
+                  type="button"
+                  onClick={() => setShowPassword(v => !v)}
+                  className="text-slate-400 transition hover:text-slate-700"
+                  aria-label={showPassword ? "Masquer le mot de passe" : "Afficher le mot de passe"}
+                >
+                  {showPassword ? <EyeOpen/> : <EyeOff/>}
+                </button>
+              </div>
+            </label>
 
-        {/* Lien mot de passe oublié */}
-        <div className="flex justify-end mb-4">
-          <button
-            type="button"
-            onClick={() => setShowForgot(true)}
-            className="text-xs text-primary hover:underline transition-colors">
-            Mot de passe oublié ?
-          </button>
-        </div>
+            <div className="mb-6 flex items-center justify-between gap-3 text-xs text-slate-600">
+              <label className="flex items-center gap-2">
+                <input type="checkbox" className="h-3.5 w-3.5 accent-slate-950" defaultChecked />
+                <span>Rappellez moi</span>
+              </label>
+              <button
+                type="button"
+                onClick={() => setShowForgot(true)}
+                className="font-semibold text-blue-700 underline-offset-2 hover:text-blue-800 hover:underline"
+              >
+                Mot de passe oublié?
+              </button>
+            </div>
 
-        {/* Bouton connexion */}
-        <button
-          type="submit"
-          disabled={loadingLogin}
-          className="w-full bg-primary text-primary-foreground py-2.5 rounded-lg hover:bg-primary/90 transition-colors duration-200 mb-4 font-semibold disabled:opacity-60">
-          {loadingLogin ? "Connexion..." : "Se connecter"}
-        </button>
+            <button
+              type="submit"
+              disabled={loadingLogin}
+              className="mx-auto flex items-center justify-center gap-2 rounded-[3px] bg-slate-950 px-7 py-3 text-xs font-extrabold uppercase tracking-wide text-white shadow-[0_14px_24px_rgba(15,23,42,0.24)] transition-all duration-200 hover:-translate-y-0.5 hover:bg-slate-800 hover:shadow-[0_18px_32px_rgba(15,23,42,0.30)] active:translate-y-0 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-slate-950 focus-visible:ring-offset-2 disabled:opacity-60"
+            >
+              {loadingLogin ? <Spinner/> : <LogIn className="h-4 w-4" />}
+              {loadingLogin ? "Connexion..." : "Se connecter"}
+            </button>
+          </form>
+        </section>
 
-        {/* Lien inscription */}
-        <p className="text-center text-muted-foreground text-sm">
+        <section className="relative hidden min-h-[520px] items-center justify-center overflow-hidden bg-slate-950 p-10 text-white lg:flex">
+          <div className="absolute inset-0 bg-[radial-gradient(circle_at_20%_10%,rgba(255,255,255,0.10),transparent_26%),radial-gradient(circle_at_82%_18%,rgba(255,255,255,0.12),transparent_24%),radial-gradient(circle_at_72%_78%,rgba(0,29,92,0.30),transparent_34%)]" />
+          <div className="absolute -right-16 -top-14 h-64 w-64 rounded-full bg-white/10" />
+          <div className="absolute -left-20 top-40 h-44 w-44 rounded-full bg-black/25" />
+          <div className="absolute -bottom-20 left-24 h-56 w-56 rounded-full bg-black/30" />
+          <div className="absolute right-[-38px] top-[43%] h-28 w-28 rounded-full bg-white/12" />
+
+          <div className="relative z-10 max-w-sm text-center">
+            <p className="mb-3 text-2xl font-extrabold uppercase tracking-wide">Bienvenue sur vision Canal+ </p>
+            <p className="mx-auto mb-8 max-w-xs text-sm font-semibold leading-relaxed text-white/90">
+              Vous n'avez pas encore de compte?
+            </p>
+            <button
+              type="button"
+              onClick={() => navigate("/Inscription")}
+              className="inline-flex items-center justify-center gap-2 rounded-[3px] border border-white bg-white px-8 py-4 text-xs font-extrabold uppercase text-slate-950 shadow-[0_12px_28px_rgba(0,0,0,0.22)] transition-all duration-200 hover:-translate-y-0.5 hover:bg-slate-950 hover:text-white hover:shadow-[0_18px_34px_rgba(0,0,0,0.35)] active:translate-y-0 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-white focus-visible:ring-offset-2 focus-visible:ring-offset-slate-950"
+            >
+              <UserPlus className="h-4 w-4" />
+              S'inscrire
+            </button>
+          </div>
+        </section>
+
+        <div className="border-t border-slate-100 px-6 pb-8 text-center text-sm text-slate-500 lg:hidden">
           Vous n'avez pas encore de compte ?{" "}
-          <button type="button" onClick={() => navigate("/inscription")}
-                  className="text-primary font-semibold hover:underline">
+          <button type="button" onClick={() => navigate("/Inscription")}
+                  className="font-bold text-slate-950 hover:underline">
             S'inscrire
           </button>
-        </p>
-      </form>
+        </div>
+      </main>
     </div>
   );
 }

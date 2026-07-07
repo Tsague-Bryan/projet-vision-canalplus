@@ -6,6 +6,21 @@ const auth    = require("../middleware/auth");
 const pool    = require("../db");
 const router  = express.Router();
 
+const ensureWalletOperationsTable = async () => {
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS wallet_operations (
+      id INT AUTO_INCREMENT PRIMARY KEY,
+      user_id INT NOT NULL,
+      type VARCHAR(40) NOT NULL,
+      montant DECIMAL(14,2) NOT NULL DEFAULT 0,
+      statut VARCHAR(30) NOT NULL DEFAULT 'validee',
+      moyen_paiement VARCHAR(80) NULL,
+      message VARCHAR(255) NULL,
+      created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
+    )
+  `);
+};
+
 router.get("/partner/dashboard", auth, async (req, res) => {
   try {
     const userId = req.user.id;
@@ -33,6 +48,20 @@ router.get("/partner/dashboard", auth, async (req, res) => {
     const [[{ total: revenus }]] = await pool.query(
       "SELECT COALESCE(SUM(montant), 0) AS total FROM reabonnements WHERE users_id = ?", [userId]
     );
+    await ensureWalletOperationsTable();
+    const [[{ total: totalRecharges }]] = await pool.query(
+      `SELECT COALESCE(SUM(total), 0) AS total
+       FROM (
+         SELECT montant AS total
+         FROM demandes_recharge
+         WHERE user_id = ? AND statut = 'validee'
+         UNION ALL
+         SELECT montant AS total
+         FROM wallet_operations
+         WHERE user_id = ? AND statut IN ('validee', 'approved') AND type IN ('wallet_credit', 'admin_credit')
+       ) recharges`,
+      [userId, userId]
+    );
 
     const [statsRows] = await pool.query(
       `SELECT formule, COALESCE(SUM(commission), 0) AS commissions, COUNT(*) AS nb_operations
@@ -54,9 +83,9 @@ router.get("/partner/dashboard", auth, async (req, res) => {
     const transactions = await Promise.all(transactionsRows.map(async (t) => {
       const fileName = `facture_${t.id}.html`;
       const fp = path.join(__dirname, "../invoices", fileName);
-      
+
       // Utilisation d'une vérification asynchrone (facultatif ici mais plus propre)
-      const hasInvoice = fs.existsSync(fp); 
+      const hasInvoice = fs.existsSync(fp);
       return { ...t, facture_url: hasInvoice ? `/invoices/${fileName}` : null };
     }));
 
@@ -67,14 +96,23 @@ router.get("/partner/dashboard", auth, async (req, res) => {
     } catch (_) {}
     const boutonBalanceActif = balanceGlobalActif && Number(u.balance_actif) === 1;
 
+    let adminWhatsapp = "237695225823";
+    try {
+      const [[waRow]] = await pool.query("SELECT valeur FROM app_config WHERE cle = 'admin_whatsapp' LIMIT 1");
+      if (waRow) adminWhatsapp = waRow.valeur;
+    } catch (_) {}
+
     return res.json({
       message:              `Bienvenue ${u.prenom||""} ${u.name}`.trim(),
       wallet_balance:       Number(u.wallet_balance),
       commission_balance:   Number(u.commission_balance),
       commission_total:     Number(u.commission_total),
+      total_recharges:      Number(totalRecharges),
+      total_commissions_gagnees: Number(u.commission_total),
       bouton_balance_actif: boutonBalanceActif,
       balance_global_actif: balanceGlobalActif,
       balance_partenaire_actif: Number(u.balance_actif) === 1,
+      admin_whatsapp:       adminWhatsapp,
       user: {
         name: u.name,
         prenom: u.prenom,

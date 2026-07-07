@@ -1,14 +1,16 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import axios from "axios";
 import { useNavigate } from "react-router-dom";
-import { apiUrl, serverUrl } from "../lib/api";
+import Swal from "sweetalert2";
+import { Wrench } from "lucide-react";
+import InvoiceViewer from "../components/InvoiceViewer";
+import { apiUrl } from "../lib/api";
 import { getToken } from "../lib/session";
 
 const offres = [
   { name: "Access", price: 5000 },
   { name: "Evasion", price: 10500 },
   { name: "Access+", price: 15000 },
-  { name: "Evasion+", price: 20000 },
   { name: "Tout Canal+", price: 28000 },
 ];
 
@@ -26,14 +28,14 @@ const optionsList = [
 const resolveFormuleName = (raw) => {
   if (!raw) return "";
   const map = {
-    "ACDD": "Access", "EVDD": "Evasion", "ACPDD": "Access+", "EVPDD": "Evasion+", "TCADD": "Tout Canal+",
+    "ACDD": "Access", "EVDD": "Evasion", "ACPDD": "Access+", "TCADD": "Tout Canal+",
     "ENGLISH PLUS DD": "ENGLISH PLUS DD", "ENGLISH+": "ENGLISH PLUS DD", "ENGLISH +": "ENGLISH PLUS DD",
     "CHARME": "CHARME",
     "ACCESS": "Access", "ACCES": "Access", "EVASION": "Evasion", "ACCESS+": "Access+",
-    "ACCES+": "Access+", "EVASION+": "Evasion+", "TOUT CANAL+": "Tout Canal+",
+    "ACCES+": "Access+", "TOUT CANAL+": "Tout Canal+",
     "TOUTCANAL+": "Tout Canal+", "TOUT_CANAL+": "Tout Canal+", "TOUT CANAL": "Tout Canal+",
     "Access": "Access", "Evasion": "Evasion", "Access+": "Access+",
-    "Evasion+": "Evasion+", "Tout Canal+": "Tout Canal+",
+ "Tout Canal+": "Tout Canal+",
     "Essentiel": "Access+",
   };
   return map[raw] || map[raw.toUpperCase()] || raw;
@@ -44,14 +46,27 @@ const getFormulePrice = (raw) => {
   return [...offres, ...upgradeOnlyOffres].find(o => o.name === name)?.price || 0;
 };
 
-const isUpgradeOnlyFormule = (raw) =>
-  upgradeOnlyOffres.some(o => o.name === resolveFormuleName(raw));
+const priceFallbackByCode = {
+  ACDD: 5000,
+  EVDD: 10500,
+  ACPDD: 15000,
+  TCADD: 28000,
+  "ENGLISH PLUS DD": 5000,
+  CHARME: 7000,
+  NETFLIX: 3000,
+  "NETFLIX STANDARD": 5500,
+  "NETFLIX PREMIUM": 7000,
+};
 
-const getOptionsTotal = (codes) =>
-  optionsList.reduce((sum, o) => codes.includes(o.code) ? sum + o.price : sum, 0);
+const getCatalogPrice = (item) => {
+  const rawPrice = item?.price ?? item?.prix ?? item?.montant ?? item?.amount;
+  const parsed = Number(rawPrice);
+  if (Number.isFinite(parsed) && parsed > 0) return parsed;
+  return priceFallbackByCode[item?.code] || getFormulePrice(item?.name) || 0;
+};
 
 const mapFormule = (name) => {
-  const map = { "Access": "ACDD", "Evasion": "EVDD", "Access+": "ACPDD", "Evasion+": "EVPDD", "Tout Canal+": "TCADD" };
+  const map = { "Access": "ACDD", "Evasion": "EVDD", "Access+": "ACPDD", "Tout Canal+": "TCADD" };
   return map[name] || name;
 };
 
@@ -65,6 +80,24 @@ const formatPhone = (phone) => {
 };
 
 const formatDate = (d) => d || "-";
+const SEARCH_HISTORY_KEY = "vision_search_identifiers_v1";
+
+const loadSearchHistory = () => {
+  try {
+    const parsed = JSON.parse(localStorage.getItem(SEARCH_HISTORY_KEY) || "{}");
+    return parsed && typeof parsed === "object" ? parsed : {};
+  } catch (_) {
+    return {};
+  }
+};
+
+const saveSearchIdentifier = (type, value) => {
+  const clean = String(value || "").trim();
+  if (!type || !clean) return;
+  const current = loadSearchHistory();
+  const next = [clean, ...(current[type] || []).filter((item) => item !== clean)].slice(0, 20);
+  localStorage.setItem(SEARCH_HISTORY_KEY, JSON.stringify({ ...current, [type]: next }));
+};
 
 const Spinner = () => (
   <svg className="animate-spin" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
@@ -74,7 +107,8 @@ const Spinner = () => (
 
 const SuccessScreen = ({ result, operationType, client, onClose }) => {
   const label = operationType === "upgrade" ? "Upgrade" : operationType === "addOption" ? "Ajout d'options" : "Réabonnement";
-  const factureUrl = result?.facture_url ? serverUrl(result.facture_url) : null;
+  const factureUrl = result?.facture_url || null;
+  const [invoiceView, setInvoiceView] = useState(null);
 
   return (
     <div className="flex flex-col items-center py-8 gap-5 text-center">
@@ -85,7 +119,7 @@ const SuccessScreen = ({ result, operationType, client, onClose }) => {
       </div>
       <div>
         <h3 className="text-xl font-bold text-foreground">{label} réussi !</h3>
-        {client && <p className="text-sm text-muted-foreground mt-1">Abonné <strong>{client?.name}</strong> — {client?.numabo}</p>}
+        {client && <p className="text-sm text-muted-foreground mt-1">Abonné <strong>{client?.name}</strong>  {client?.numabo}</p>}
       </div>
       {result?.commission > 0 && (
         <div className="w-full bg-green-50 border border-green-200 rounded-lg p-3 text-sm">
@@ -96,23 +130,23 @@ const SuccessScreen = ({ result, operationType, client, onClose }) => {
         </div>
       )}
       {result?.test_mode && (
-        <div className="w-full bg-amber-50 border border-amber-200 rounded-lg p-3 text-xs text-amber-700 font-medium">⚠ MODE TEST — Aucune opération réelle effectuée</div>
+        <div className="w-full bg-amber-50 border border-amber-200 rounded-lg p-3 text-xs text-amber-700 font-medium">a MODE TEST  Aucune opération réelle effectuée</div>
       )}
       <div className="w-full flex flex-col gap-3">
         {factureUrl ? (
           <>
-            <a href={factureUrl} target="_blank" rel="noreferrer"
+            <button type="button" onClick={() => setInvoiceView({ url: factureUrl, print: false })}
               className="flex items-center justify-center gap-2 w-full bg-primary text-primary-foreground font-semibold py-3 rounded-lg transition-all hover:bg-primary/90">
               <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z" /><polyline points="14 2 14 8 20 8" /></svg>
               Voir la facture
-            </a>
-            <button onClick={() => { const w = window.open(factureUrl, "_blank"); if (w) { w.focus(); setTimeout(() => w.print(), 800); } }}
+            </button>
+            <button type="button" onClick={() => setInvoiceView({ url: factureUrl, print: true })}
               className="flex items-center justify-center gap-2 w-full bg-muted text-foreground font-semibold py-3 rounded-lg transition-all hover:bg-muted/80">
               <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><polyline points="6 9 6 2 18 2 18 9" /><path d="M6 18H4a2 2 0 0 1-2-2v-5a2 2 0 0 1 2-2h16a2 2 0 0 1 2 2v5a2 2 0 0 1-2 2h-2" /><rect x="6" y="14" width="12" height="8" /></svg>
               Imprimer la facture
             </button>
           </>
-        ) : <p className="text-xs text-muted-foreground">Facture en cours de génération…</p>}
+        ) : <p className="text-xs text-muted-foreground">Facture en cours de génération⬦</p>}
         {result?.whatsappLink && (
           <a href={result.whatsappLink} target="_blank" rel="noreferrer"
             className="flex items-center justify-center gap-2 w-full bg-green-600 hover:bg-green-700 text-white font-semibold py-3 rounded-lg transition-all">
@@ -124,12 +158,28 @@ const SuccessScreen = ({ result, operationType, client, onClose }) => {
           Nouvelle opération
         </button>
       </div>
+      {invoiceView && (
+        <InvoiceViewer
+          invoiceUrl={invoiceView.url}
+          autoPrint={invoiceView.print}
+          onClose={() => setInvoiceView(null)}
+        />
+      )}
     </div>
   );
 };
 
 export default function Reabonnement() {
   const navigate = useNavigate();
+
+  useEffect(() => {
+    const params = new URLSearchParams(window.location.search);
+    const numabo = params.get("numabo");
+    if (numabo) {
+      setSearchValue(numabo);
+      setSearchType("numabo");
+    }
+  }, []);
 
   const [step, setStep] = useState(1);
   const [isUpgradeMode, setIsUpgradeMode] = useState(false);
@@ -147,8 +197,41 @@ export default function Reabonnement() {
   const [loading, setLoading] = useState(false);
   const [successResult, setSuccessResult] = useState(null);
   const [showSuccess, setShowSuccess] = useState(false);
+  const [catalog, setCatalog] = useState([]);
+  const [searchHistory, setSearchHistory] = useState(loadSearchHistory);
 
   const currentClientFormule = resolveFormuleName(client?.bouquet || client?.previousFormule || "");
+  const mainOffres = catalog.length
+    ? catalog.filter(f => f.type === "formule").map(f => ({ name: resolveFormuleName(f.name || f.code), code: f.code, price: getCatalogPrice(f) }))
+    : offres;
+  const upgradeOffres = catalog.length
+    ? catalog.filter(f => ["ENGLISH PLUS DD","CHARME"].includes(f.code)).map(f => ({ name: resolveFormuleName(f.name || f.code), code: f.code, price: getCatalogPrice(f) }))
+    : upgradeOnlyOffres;
+  const optionOffres = catalog.length
+    ? catalog.filter(f => f.type === "option" && !["ENGLISH PLUS DD","CHARME"].includes(f.code)).map(f => ({ code: f.code, name: f.name, price: getCatalogPrice(f) }))
+    : optionsList;
+
+  useEffect(() => {
+    const token = getToken();
+    if (!token) return;
+    axios.get(apiUrl("/formules"), { headers: { Authorization: `Bearer ${token}` } })
+      .then(res => setCatalog(res.data || []))
+      .catch(() => setCatalog([]));
+  }, []);
+
+  const getFormulePriceLocal = (raw) => {
+    const name = resolveFormuleName(raw);
+    const code = mapFormule(raw);
+    return [...mainOffres, ...upgradeOffres].find(o => o.name === name || o.code === code)?.price || 0;
+  };
+  const getOptionsTotalLocal = (codes) =>
+    optionOffres.reduce((sum, o) => codes.includes(o.code) ? sum + o.price : sum, 0);
+  const isUpgradeOnlyFormuleLocal = (raw) =>
+    upgradeOffres.some(o => o.name === resolveFormuleName(raw) || o.code === raw);
+  const mapFormuleLocal = (name) => {
+    const found = [...mainOffres, ...upgradeOffres].find(o => o.name === name || o.code === name);
+    return found?.code || mapFormule(name);
+  };
 
   const recalcMontant = ({
     nextFormule = formule,
@@ -157,17 +240,17 @@ export default function Reabonnement() {
     nextIsUpgrade = isUpgradeMode,
     nextIsAddOption = isAddOptionMode,
   } = {}) => {
-    const optionsTotal = getOptionsTotal(nextOptions);
+    const optionsTotal = getOptionsTotalLocal(nextOptions);
     const d = Number(nextDuree) || 1;
 
     if (nextIsUpgrade) {
-      const prixNouvelle = getFormulePrice(nextFormule);
-      const prixActuelle = getFormulePrice(currentClientFormule);
-      const delta = isUpgradeOnlyFormule(nextFormule) ? prixNouvelle : Math.max(0, prixNouvelle - prixActuelle);
+      const prixNouvelle = getFormulePriceLocal(nextFormule);
+      const prixActuelle = getFormulePriceLocal(currentClientFormule);
+      const delta = isUpgradeOnlyFormuleLocal(nextFormule) ? prixNouvelle : Math.max(0, prixNouvelle - prixActuelle);
       return delta + optionsTotal;
     }
     if (nextIsAddOption) return optionsTotal;
-    return (getFormulePrice(nextFormule) + optionsTotal) * d;
+    return (getFormulePriceLocal(nextFormule) + optionsTotal) * d;
   };
 
   const handleOptionToggle = (code) => {
@@ -200,7 +283,7 @@ export default function Reabonnement() {
   };
 
   const searchClient = async () => {
-    if (!searchValue.trim()) { alert("Entrez une valeur de recherche"); return; }
+    if (!searchValue.trim()) { Swal.fire({ title: "Recherche", text: "Entrez une valeur de recherche", icon: "warning", confirmButtonColor: "#e53935" }); return; }
     setLoading(true);
     try {
       const payload = {};
@@ -213,21 +296,23 @@ export default function Reabonnement() {
       const results = res.data?.abonnes || (res.data?.abonne ? [res.data.abonne] : []);
 
       if (results.length > 0) {
+        saveSearchIdentifier(searchType, searchValue);
+        setSearchHistory(loadSearchHistory());
         setSearchResults(results);
         setClient(results.length === 1 ? results[0] : null);
       } else {
-        alert("Abonné introuvable");
+        Swal.fire({ title: "Non trouvé", text: "Abonné introuvable", icon: "info", confirmButtonColor: "#e53935" });
         setClient(null); setSearchResults([]);
       }
     } catch (err) {
-      alert(err.response?.data?.message || "Erreur lors de la recherche.");
+      Swal.fire({ title: "Erreur", text: err.response?.data?.message || "Erreur lors de la recherche.", icon: "error", confirmButtonColor: "#e53935" });
       setClient(null); setSearchResults([]);
     } finally { setLoading(false); }
   };
 
   const selectSearchResult = (result) => {
     const bouquet = resolveFormuleName(result?.bouquet || result?.previousFormule || "");
-    const prixFormule = getFormulePrice(bouquet);
+    const prixFormule = getFormulePriceLocal(bouquet);
     setClient(result);
     setStep(2);
     setOperationType("reabonnement");
@@ -250,17 +335,17 @@ export default function Reabonnement() {
   const handleFinalSubmit = async (e) => {
     e.preventDefault();
     const token = getToken();
-    if (!token) { alert("Utilisateur non connecté"); return; }
+    if (!token) { Swal.fire({ title: "Erreur", text: "Utilisateur non connecté", icon: "error", confirmButtonColor: "#e53935" }); return; }
 
     const numeroContrat = client?.numeroContrat || 1;
     let payload, url;
 
     if (isUpgradeMode) {
-      if (!formule) { alert("Veuillez sélectionner la nouvelle formule"); return; }
+      if (!formule) { Swal.fire({ title: "Formule", text: "Veuillez sélectionner la nouvelle formule", icon: "warning", confirmButtonColor: "#e53935" }); return; }
       payload = {
         numero_abonne: client?.numabo || "",
-        formule: mapFormule(formule),
-        formuleActuelle: mapFormule(currentClientFormule),
+        formule: mapFormuleLocal(formule),
+        formuleActuelle: mapFormuleLocal(currentClientFormule),
         materialNumber: client?.numdecabo,
         numeroContrat: Number(numeroContrat),
         montant,
@@ -272,7 +357,7 @@ export default function Reabonnement() {
     } else if (isAddOptionMode) {
       payload = {
         numero_abonne: client?.numabo || "",
-        formule: mapFormule(currentClientFormule),
+        formule: mapFormuleLocal(currentClientFormule),
         materialNumber: client?.numdecabo,
         numeroContrat: Number(numeroContrat),
         montant,
@@ -282,14 +367,14 @@ export default function Reabonnement() {
       url = apiUrl("/reabonnement/upgrade");
 
     } else {
-      if (!formule) { alert("Veuillez sélectionner une formule"); return; }
+      if (!formule) { Swal.fire({ title: "Formule", text: "Veuillez sélectionner une formule", icon: "warning", confirmButtonColor: "#e53935" }); return; }
       const tel = formatPhone(client?.manualPhone || client?.telephone || "");
       if (!tel || tel.length !== 14) {
-        alert("Téléphone invalide. Format attendu: 00237xxxxxxxxx"); return;
+        Swal.fire({ title: "Téléphone", text: "Téléphone invalide. Format attendu: 00237xxxxxxxxx", icon: "warning", confirmButtonColor: "#e53935" }); return;
       }
       payload = {
         numero_abonne: client?.numabo || "",
-        formule: mapFormule(formule),
+        formule: mapFormuleLocal(formule),
         duree: Number(duree),
         montant,
         telephoneAbonne: tel,
@@ -308,27 +393,27 @@ export default function Reabonnement() {
         setSuccessResult(res.data);
         setShowSuccess(true);
       } else {
-        alert(res.data.message || res.data.error || "Erreur lors de l'opération");
+        Swal.fire({ title: "Erreur", text: res.data.message || res.data.error || "Erreur lors de l'opération", icon: "error", confirmButtonColor: "#e53935" });
       }
     } catch (err) {
       if (err.response?.status === 401) {
-        alert("Session expirée, veuillez vous reconnecter.");
+        Swal.fire({ title: "Session expirée", text: "Session expirée, veuillez vous reconnecter.", icon: "warning", confirmButtonColor: "#e53935" });
         navigate("/LoginForm");
       } else {
-        alert(err.response?.data?.error || err.response?.data?.message || "Erreur lors de l'opération");
+        Swal.fire({ title: "Erreur", text: err.response?.data?.error || err.response?.data?.message || "Erreur lors de l'opération", icon: "error", confirmButtonColor: "#e53935" });
       }
     } finally { setLoading(false); }
   };
 
-  const prixActuelle = getFormulePrice(currentClientFormule);
-  const prixNouvelle = getFormulePrice(formule);
-  const deltaUpgrade = isUpgradeOnlyFormule(formule) ? prixNouvelle : Math.max(0, prixNouvelle - prixActuelle);
-  const optionsTotal = getOptionsTotal(selectedOptions);
+  const prixActuelle = getFormulePriceLocal(currentClientFormule);
+  const prixNouvelle = getFormulePriceLocal(formule);
+  const deltaUpgrade = isUpgradeOnlyFormuleLocal(formule) ? prixNouvelle : Math.max(0, prixNouvelle - prixActuelle);
+  const optionsTotal = getOptionsTotalLocal(selectedOptions);
 
   if (showSuccess) {
     return (
-      <div className="min-h-screen flex justify-center items-start p-6 bg-background">
-        <div className="bg-card shadow-lg rounded-lg p-6 w-full max-w-lg border border-border">
+      <div className="w-full max-w-full flex justify-center items-start bg-background px-0 py-0 sm:p-6">
+        <div className="bg-card shadow-lg rounded-lg p-4 sm:p-6 w-full max-w-lg border border-border">
           <SuccessScreen result={successResult} operationType={operationType} client={client} onClose={resetAll} />
         </div>
       </div>
@@ -336,14 +421,14 @@ export default function Reabonnement() {
   }
 
   return (
-    <div className="min-h-screen flex justify-center items-start p-6 bg-background">
-      <div className="bg-card shadow-lg rounded-lg p-6 w-full max-w-lg border border-border">
-        <h2 className="text-2xl font-bold mb-4 text-center text-foreground">Réabonnement Canal+ Cameroun</h2>
+    <div className="w-full max-w-full flex justify-center items-start bg-background px-0 py-0 sm:p-6 overflow-x-hidden">
+      <div className="bg-card shadow-lg rounded-lg p-4 sm:p-6 w-full max-w-lg border border-border">
+        <h2 className="text-xl sm:text-2xl font-bold mb-4 text-center text-foreground">Réabonnement Canal+ Cameroun</h2>
 
         {/* Barre de progression */}
         <div className="mb-6">
           <div className="flex justify-between items-center mb-2">
-            <span className="text-sm font-semibold text-foreground">Étape {step} sur 2</span>
+            <span className="text-sm font-semibold text-foreground">Etape {step} sur 2</span>
             <span className="text-sm text-muted-foreground">{Math.round((step / 2) * 100)}%</span>
           </div>
           <div className="w-full bg-muted rounded-full h-2">
@@ -353,7 +438,7 @@ export default function Reabonnement() {
 
         {step === 1 && (
           <div className="space-y-4">
-            <h3 className="text-lg font-semibold mb-4 text-foreground">Étape 1 : Rechercher l'abonné</h3>
+            <h3 className="text-lg font-semibold mb-4 text-foreground">Etape 1 : Rechercher l'abonné</h3>
             <div>
               <label className="block text-sm font-medium mb-2 text-foreground">Chercher par :</label>
               <div className="grid grid-cols-2 gap-2">
@@ -363,19 +448,21 @@ export default function Reabonnement() {
                 ))}
               </div>
             </div>
-            <div className="flex gap-2">
+            <div className="flex flex-col sm:flex-row gap-2">
               <input type="text"
+                list={`reabonnement-history-${searchType}`}
                 placeholder={{ numabo: "Nº abonné", decodeur: "Nº décodeur", telephone: "Téléphone", email: "Email" }[searchType]}
                 value={searchValue}
                 onChange={e => setSearchValue(e.target.value)}
                 onKeyPress={e => e.key === "Enter" && searchClient()}
-                className="flex-1 p-2 border border-input rounded-lg bg-background text-foreground focus:outline-none focus:ring-2 focus:ring-ring" />
+                className="w-full min-w-0 sm:flex-1 p-2 border border-input rounded-lg bg-background text-foreground focus:outline-none focus:ring-2 focus:ring-ring" />
+              <datalist id={`reabonnement-history-${searchType}`}>{(searchHistory[searchType] || []).map((item) => <option key={item} value={item} />)}</datalist>
               <button onClick={searchClient} disabled={loading || !searchValue.trim()}
-                className="bg-primary text-primary-foreground px-4 rounded-lg hover:bg-primary/90 disabled:opacity-50 disabled:cursor-not-allowed">
+                className="w-full sm:w-auto sm:flex-shrink-0 bg-primary text-primary-foreground px-4 py-2 rounded-lg hover:bg-primary/90 disabled:opacity-50 disabled:cursor-not-allowed flex items-center justify-center">
                 {loading ? <Spinner /> : "Chercher"}
               </button>
             </div>
-            {loading && <p className="text-primary text-center text-sm">Recherche en cours…</p>}
+            {loading && <p className="text-primary text-center text-sm">Recherche en cours⬦</p>}
             {searchResults.length > 1 && (
               <div className="bg-card p-4 rounded-lg border border-border">
                 <p className="text-sm font-semibold text-foreground mb-3">Choisissez le décodeur :</p>
@@ -383,9 +470,9 @@ export default function Reabonnement() {
                   {searchResults.map((r, i) => (
                     <button key={`${r.numabo}-${r.numdecabo}-${i}`} type="button" onClick={() => selectSearchResult(r)}
                       className={`w-full text-left p-3 rounded-lg border transition ${client?.numdecabo === r.numdecabo ? "border-primary bg-primary/10" : "border-border bg-card hover:border-primary/50"}`}>
-                      <div className="flex justify-between items-center">
+                      <div className="flex flex-col sm:flex-row sm:justify-between sm:items-center gap-2">
                         <div><p className="font-semibold text-foreground">{r.name}</p><p className="text-sm text-muted-foreground">Nº abonné : {r.numabo}</p></div>
-                        <div className="text-right text-sm text-muted-foreground"><p>Décodeur : {r.numdecabo || "-"}</p><p>Status : {r.status}</p></div>
+                        <div className="sm:text-right text-sm text-muted-foreground"><p>Décodeur : {r.numdecabo || "-"}</p><p>Status : {r.status}</p></div>
                       </div>
                     </button>
                   ))}
@@ -400,7 +487,7 @@ export default function Reabonnement() {
                 <p className="text-sm"><strong>Nº décodeur :</strong> {client.numdecabo}</p>
               </div>
             )}
-            <div className="flex gap-3 mt-6">
+            <div className="flex flex-col sm:flex-row gap-3 mt-6">
               <button disabled className="flex-1 bg-muted text-muted-foreground py-2 rounded-lg cursor-not-allowed">Précédent</button>
               <button onClick={() => setStep(2)} disabled={!client}
                 className="flex-1 bg-primary text-primary-foreground py-2 rounded-lg hover:bg-primary/90 disabled:opacity-50 disabled:cursor-not-allowed">Suivant</button>
@@ -410,7 +497,7 @@ export default function Reabonnement() {
 
         {step === 2 && client && (
           <div className="space-y-4">
-            <h3 className="text-lg font-semibold mb-4 text-foreground">Étape 2 : Vérifier et valider</h3>
+            <h3 className="text-lg font-semibold mb-4 text-foreground">Etape 2 : Vérifier et valider</h3>
             <div className="bg-muted/30 p-4 rounded-lg space-y-2 text-sm border border-border">
               <p><strong>Nom :</strong> {client.name}</p>
               <p><strong>Statut :</strong> {String(client.status)}</p>
@@ -447,23 +534,28 @@ export default function Reabonnement() {
                     required>
                     <option value="">-- Sélectionner une formule --</option>
                     {[
-                      ...offres,
-                      ...(isUpgradeMode ? upgradeOnlyOffres : []),
+                      ...mainOffres,
+                      ...(isUpgradeMode ? upgradeOffres : []),
                     ]
                       .filter(o => !isUpgradeMode || o.name !== currentClientFormule)
                       .map(o => (
                         <option key={o.name} value={o.name}>
-                          {o.name} — {o.price.toLocaleString()} FCFA/mois
+                          {o.name}  {o.price.toLocaleString()} FCFA/mois
                         </option>
                       ))}
                   </select>
                 )}
                 {isUpgradeMode && formule && (
                   <div className="mt-2 p-3 bg-blue-50 border border-blue-200 rounded-lg text-xs text-blue-800 space-y-1">
-                    <p>Formule actuelle : <strong>{currentClientFormule}</strong> — {prixActuelle.toLocaleString()} FCFA</p>
-                    <p> Nouvelle formule : <strong>{formule}</strong> — {prixNouvelle.toLocaleString()} FCFA</p>
-                    <p className="border-t border-blue-200 pt-1"> Complément : {prixNouvelle.toLocaleString()} − {prixActuelle.toLocaleString()} = <strong>{deltaUpgrade.toLocaleString()} FCFA</strong></p>
-                    {selectedOptions.length > 0 && <p>🔧 Options : +{optionsTotal.toLocaleString()} FCFA</p>}
+                    <p>Formule actuelle : <strong>{currentClientFormule}</strong>  {prixActuelle.toLocaleString()} FCFA</p>
+                    <p> Nouvelle formule : <strong>{formule}</strong>  {prixNouvelle.toLocaleString()} FCFA</p>
+                    <p className="border-t border-blue-200 pt-1"> Complément : {prixNouvelle.toLocaleString()}  {prixActuelle.toLocaleString()} = <strong>{deltaUpgrade.toLocaleString()} FCFA</strong></p>
+                    {selectedOptions.length > 0 && (
+                      <p className="inline-flex items-center gap-1.5">
+                        <Wrench className="h-3.5 w-3.5" />
+                        Options : +{optionsTotal.toLocaleString()} FCFA
+                      </p>
+                    )}
                   </div>
                 )}
               </div>
@@ -480,11 +572,11 @@ export default function Reabonnement() {
                 <button type="button" onClick={() => setOptionsOpen(o => !o)}
                   className="w-full flex justify-between items-center p-3 border border-input rounded-lg bg-background text-left text-foreground hover:border-primary/50">
                   <span>{selectedOptions.length > 0 ? `${selectedOptions.length} option(s) sélectionnée(s)` : "Choisir des options"}</span>
-                  <span className="text-sm text-muted-foreground">{optionsOpen ? "▲" : "▼"}</span>
+                  <span className="text-sm text-muted-foreground">{optionsOpen ? "" : ""}</span>
                 </button>
                 {optionsOpen && (
                   <div className="absolute left-0 right-0 mt-2 border border-border rounded-lg bg-card shadow-lg z-20 max-h-64 overflow-y-auto p-3">
-                    {optionsList.map(option => (
+                    {optionOffres.map(option => (
                       <label key={option.code} className="flex items-center gap-3 py-2 px-2 rounded hover:bg-muted/30 cursor-pointer">
                         <input type="checkbox" checked={selectedOptions.includes(option.code)} onChange={() => handleOptionToggle(option.code)} className="h-4 w-4 text-primary rounded border-input" />
                         <span className="flex-1 text-sm text-foreground">{option.name}</span>
@@ -502,16 +594,16 @@ export default function Reabonnement() {
                   <p className="text-xs text-muted-foreground mt-1">= {deltaUpgrade.toLocaleString()} FCFA (complément upgrade){selectedOptions.length > 0 && ` + ${optionsTotal.toLocaleString()} FCFA options`}</p>
                 )}
                 {!isUpgradeMode && !isAddOptionMode && formule && (
-                  <p className="text-xs text-muted-foreground mt-1">= {getFormulePrice(formule).toLocaleString()} FCFA × {duree} mois{selectedOptions.length > 0 && ` + ${optionsTotal.toLocaleString()} FCFA options`}</p>
+                  <p className="text-xs text-muted-foreground mt-1">= {getFormulePriceLocal(formule).toLocaleString()} FCFA  {duree} mois{selectedOptions.length > 0 && ` + ${optionsTotal.toLocaleString()} FCFA options`}</p>
                 )}
               </div>
 
-              <div className="flex gap-3">
+              <div className="flex flex-col sm:flex-row gap-3">
                 <button type="button" onClick={() => setStep(1)} className="flex-1 bg-muted text-foreground py-2 rounded-lg hover:bg-muted/80">Précédent</button>
                 <button type="submit" disabled={loading || (!formule && !isAddOptionMode)}
                   className="flex-1 bg-primary text-primary-foreground py-2 rounded-lg hover:bg-primary/90 disabled:opacity-50 disabled:cursor-not-allowed flex items-center justify-center gap-2">
                   {loading && <Spinner />}
-                  {loading ? "Traitement…" : isUpgradeMode ? "Valider l'upgrade" : isAddOptionMode ? "Valider l'ajout d'option" : "Valider réabonnement"}
+                  {loading ? "Traitement⬦" : isUpgradeMode ? "Valider l'upgrade" : isAddOptionMode ? "Valider l'ajout d'option" : "Valider réabonnement"}
                 </button>
               </div>
             </form>

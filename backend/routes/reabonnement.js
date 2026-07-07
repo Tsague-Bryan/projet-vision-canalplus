@@ -7,21 +7,18 @@ const auth    = require("../middleware/auth");
 const fs      = require("fs");
 const path    = require("path");
 const https   = require("https");
-const { calculateAndApplyCommissions, calculateAdminCommission } = require("../utils/commissionEngine");
+const { calculateAndApplyCommissions, calculateAdminCommission, getFormulaPrices, normalizeCode } = require("../utils/commissionEngine");
 
 
 
-// ✅ Agent HTTPS qui accepte les certificats auto-signés
-const httpsAgent = new https.Agent({ rejectUnauthorized: false });
-
-// ── Mapping codes formules ─────────────────────────────────────────────────────
+// —— Mapping codes formules —————————————————————————————————————————————————————
 const optionCodeMap = {
   "Access":          "ACDD",
   "Evasion":         "EVDD",
-  "Évasion":         "EVDD",
+  "0vasion":         "EVDD",
   "Access+":         "ACPDD",
-  "Evasion+":        "EVPDD",
-  "Évasion+":        "EVPDD",
+
+
   "Tout Canal+":     "TCADD",
   "Charme":          "CHARME",
   "CHARME":          "CHARME",
@@ -37,7 +34,7 @@ const englishOptionByOffer = {
   ACDD:  "EAOACDD",
   EVDD:  "EAOEVDD",
   ACPDD: "EAOACPDD",
-  EVPDD: "EAOEVPDD",
+
 };
 
 const canalOptionCodeMap = {
@@ -68,12 +65,12 @@ const mapOptionCodes = (codes, offreCode) =>
 
 const cleanFujisatValue = (value) => String(value ?? "").trim();
 
-// ── Prix des formules ──────────────────────────────────────────────────────────
-const PRIX_FORMULES = {
+// —— Prix des formules ——————————————————————————————————————————————————————————
+const PRIX_FORMULES_FALLBACK = {
   "ACDD":  5000,
   "EVDD":  10500,
   "ACPDD": 15000,
-  "EVPDD": 20000,
+
   "TCADD": 28000,
   "ENGLISH PLUS DD": 5000,
   "CHARME": 7000,
@@ -81,9 +78,9 @@ const PRIX_FORMULES = {
 
 const NOMS_FORMULES = {
   "ACDD":  "Access",
-  "EVDD":  "Évasion",
+  "EVDD":  "0vasion",
   "ACPDD": "Access+",
-  "EVPDD": "Évasion+",
+
   "TCADD": "Tout Canal+",
   "ENGLISH PLUS DD": "English+",
   "CHARME": "Charme",
@@ -91,34 +88,30 @@ const NOMS_FORMULES = {
 
 const UPGRADE_OPTION_CODES = new Set(["ENGLISH PLUS DD", "CHARME"]);
 
-// ── TEST MODE ─────────────────────────────────────────────────────────────────
-const isTestMode = () => String(process.env.FUJISAT_TEST_MODE).toLowerCase().trim() === "true";
+const getDbPriceMap = async (connection, codes = []) => {
+  const prices = await getFormulaPrices(connection, codes);
+  const positivePrices = Object.fromEntries(
+    Object.entries(prices).filter(([, price]) => Number(price) > 0)
+  );
+  return { ...PRIX_FORMULES_FALLBACK, ...positivePrices };
+};
 
+// —— Helpers ———————————————————————————————————————————————————————————————————
+const isTestMode = async () => {
+  try {
+    const [[row]] = await pool.query("SELECT valeur FROM app_config WHERE cle = 'fujisat_test_mode' LIMIT 1");
+    if (row) return String(row.valeur).toLowerCase().trim() === "true";
+  } catch (_) {}
+  return String(process.env.FUJISAT_TEST_MODE).toLowerCase().trim() === "true";
+};
 const fujisatBaseUrl = () => String(process.env.FUJISAT_URL || "").replace(/\/+$/, "");
 
-const createFujisatHttpsAgent = (allowSelfSigned = false) => new https.Agent({
+const createFujisatAgent = () => new https.Agent({
+  rejectUnauthorized: false,
   keepAlive: false,
   maxCachedSessions: 0,
-  rejectUnauthorized: !allowSelfSigned,
-  ALPNProtocols: ["http/1.1"],
-  minVersion: "TLSv1.2",
+  sessionIdContext: `fujisat-${Date.now()}`,
 });
-
-const fujisatAxiosOptions = (overrides = {}) => {
-  const allowSelfSigned = overrides.allowSelfSigned ?? String(process.env.FUJISAT_ALLOW_SELF_SIGNED || "").toLowerCase().trim() === "true";
-  return {
-    auth:    { username: process.env.FUJISAT_USER, password: process.env.FUJISAT_PASS },
-    headers: {
-      "Accept": "application/json",
-      "Content-Type": "application/json",
-      "Connection": "close",
-      "User-Agent": process.env.FUJISAT_USER_AGENT || "PostmanRuntime/7.43.0",
-    },
-    timeout: 120000,
-    transitional: { clarifyTimeoutError: true },
-    httpsAgent: createFujisatHttpsAgent(allowSelfSigned),
-  };
-};
 
 const fujisatErrorPayload = (err) => ({
   status:  err.response?.status || null,
@@ -127,13 +120,13 @@ const fujisatErrorPayload = (err) => ({
   code:    err.code || null,
   url:     err.config?.url || null,
 });
- 
+const callFujisat = async (url, payload) => {
+  console.log("x FUJISAT URL:", url);
+  console.log("x FUJISAT PAYLOAD:", JSON.stringify(payload));
 
-const callFujisat = async (url, payload, options = {}) => {
-  if (isTestMode()) {
-    console.log("🧪 [TEST MODE] Simulation Fujisat");
+  if (await isTestMode()) {
+    console.log("x [TEST MODE] Simulation Fujisat");
     await new Promise(r => setTimeout(r, 400));
-    // ✅ Calcul correct des dates : fin = début + durée - 1 jour
     const debut    = new Date();
     const fin      = new Date(debut);
     fin.setMonth(fin.getMonth() + (Number(payload.duree) || 1));
@@ -150,7 +143,50 @@ const callFujisat = async (url, payload, options = {}) => {
       }
     };
   }
-  return await axios.post(url, payload, fujisatAxiosOptions(options));
+
+  let fujiUser = process.env.FUJISAT_USER;
+  let fujiPass = process.env.FUJISAT_PASS;
+  try {
+    const [[userRow]] = await pool.query("SELECT valeur FROM app_config WHERE cle = 'fujisat_user' LIMIT 1");
+    const [[passRow]] = await pool.query("SELECT valeur FROM app_config WHERE cle = 'fujisat_pass' LIMIT 1");
+    if (userRow) fujiUser = userRow.valeur;
+    if (passRow) fujiPass = passRow.valeur;
+  } catch (e) {
+    console.warn("Impossible de récupérer les identifiants Fujisat depuis la BDD, repli vers .env");
+  }
+
+  try {
+    const response = await axios({
+      method: "POST",
+      url,
+      data: payload,
+      timeout: 300000,
+      maxRedirects: 5,
+      httpsAgent: createFujisatAgent(),
+      auth: {
+        username: fujiUser,
+        password: fujiPass,
+      },
+      headers: {
+        "Accept": "application/json",
+        "Content-Type": "application/json",
+        "User-Agent": process.env.FUJISAT_USER_AGENT || "PostmanRuntime/7.43.0",
+        "Expect": "",
+      },
+    });
+
+    console.log(" FUJISAT STATUS:", response.status);
+    console.log(" FUJISAT DATA:", response.data);
+    return response;
+  } catch (err) {
+    console.error(" FUJISAT ERREUR:", {
+      message: err.message,
+      code: err.code,
+      status: err.response?.status,
+      data: err.response?.data,
+    });
+    throw err;
+  }
 };
 
 const callFujisatRenew = async (payload) => {
@@ -164,28 +200,38 @@ const callFujisatRenew = async (payload) => {
 
   for (const p of paths) {
     const url = /^https?:\/\//i.test(p) ? p : `${fujisatBaseUrl()}${p.startsWith("/") ? p : `/${p}`}`;
-    try {
-      return await callFujisat(url, payload);
-    } catch (err) {
-      lastError = err;
-      if (err.code === "ECONNRESET") {
-        try {
-          console.warn("Fujisat ECONNRESET, nouvelle tentative HTTPS compatible sans cache TLS...");
-          return await callFujisat(url, payload, { allowSelfSigned: true });
-        } catch (retryErr) {
-          lastError = retryErr;
+    for (let attempt = 1; attempt <= 3; attempt++) {
+      try {
+        console.log(` Fujisat tentative ${attempt}/3   ${url}`);
+        return await callFujisat(url, payload);
+      } catch (err) {
+        lastError = err;
+        const status = err.response?.status;
+        const isReset = err.code === "ECONNRESET" || err.message?.includes("ECONNRESET");
+        const isTimeout = err.code === "ECONNABORTED" || err.code === "ETIMEDOUT";
+
+        if ([404, 405].includes(status)) break;
+
+        if ((isReset || isTimeout) && attempt < 3) {
+          const delay = attempt * 2000;
+          console.warn(` ${err.code}   attente ${delay}ms avant tentative ${attempt + 1}`);
+          await new Promise(r => setTimeout(r, delay));
+          continue;
         }
+
+        if (!isReset && !isTimeout) break;
       }
-      const status = lastError.response?.status;
-      if (![404, 405].includes(status)) throw lastError;
     }
+
+    const status = lastError?.response?.status;
+    if (![404, 405].includes(status)) throw lastError;
   }
 
   throw lastError;
 };
 
-// ── Calcul de la date de fin correcte ─────────────────────────────────────────
-// Règle : si réabonnement le 04 mai → fin le 03 juin (pas le 04 juin)
+// —— Calcul de la date de fin correcte —————————————————————————————————————————
+// Règle : si réabonnement le 04 mai   fin le 03 juin (pas le 04 juin)
 const calculerDateFin = (dateDebutStr, duree) => {
   try {
     // dateDebutStr peut être au format dd/mm/yyyy ou yyyy-mm-dd
@@ -200,20 +246,19 @@ const calculerDateFin = (dateDebutStr, duree) => {
     }
     const fin = new Date(debut);
     fin.setMonth(fin.getMonth() + (Number(duree) || 1));
-    fin.setDate(fin.getDate() - 1); // ✅ -1 jour
+    fin.setDate(fin.getDate() - 1); //  -1 jour
     return fin.toLocaleDateString("fr-FR", { day: "2-digit", month: "2-digit", year: "numeric" });
   } catch {
     return null;
   }
 };
 
-// ── Génération facture HTML ───────────────────────────────────────────────────
+// —— Génération facture HTML ———————————————————————————————————————————————————
 const genererFacture = ({
   factureId, partnerName, partnerPhone, partnerLocation, nomAbonne, numero_abonne,
   materialNumber, formule, duree, montant, type_operation, dateDebut, dateFin,
-  numeroContrat, options,
+  numeroContrat, options, testMode = false,
 }) => {
-  const testMode     = isTestMode();
   const formuleLabel = NOMS_FORMULES[formule] || formule;
   const dateOp       = new Date().toLocaleDateString("fr-FR", { day: "2-digit", month: "2-digit", year: "numeric" });
   const optionsRows  = (options || []).map(o => `
@@ -280,7 +325,7 @@ table.bouquet tbody td{padding:6px 10px;border-bottom:1px solid #e5e7eb}
   <div class="section">
     <div class="section-title">Informations de l'abonné — N° ${numero_abonne}</div>
     <div class="grid-2">
-      <div class="field"><span class="label">Nom :</span><span class="val">${nomAbonne || "—"}</span></div>
+      <div class="field"><span class="label">Nom :</span><span class="val">${nomAbonne || "-"}</span></div>
       <div class="field"><span class="label">N° abonné :</span><span class="val">${numero_abonne}</span></div>
     </div>
   </div>
@@ -288,7 +333,7 @@ table.bouquet tbody td{padding:6px 10px;border-bottom:1px solid #e5e7eb}
   <div class="section">
     <div class="section-title">Matériel de l'abonné — Date de l'opération</div>
     <div class="grid-2">
-      <div class="field"><span class="label">N° Décodeur :</span><span class="val">${materialNumber || "—"}</span></div>
+      <div class="field"><span class="label">N° Décodeur :</span><span class="val">${materialNumber || "-"}</span></div>
       <div class="field"><span class="label">Date de l'opération :</span><span class="val">${dateOp}</span></div>
     </div>
   </div>
@@ -299,7 +344,7 @@ table.bouquet tbody td{padding:6px 10px;border-bottom:1px solid #e5e7eb}
       <div class="field"><span class="label">Durée :</span><span class="val">${duree || 1} Mois</span></div>
       <div class="field"><span class="label">Mode de règlement :</span><span class="val">Portefeuille numérique</span></div>
       <div class="field"><span class="label">Date de début :</span><span class="val">${dateDebut || dateOp}</span></div>
-      <div class="field"><span class="label">Date de fin :</span><span class="val">${dateFin || calculerDateFin(dateDebut || dateOp, duree) || "—"}</span></div>
+      <div class="field"><span class="label">Date de fin :</span><span class="val">${dateFin || calculerDateFin(dateDebut || dateOp, duree) || "-"}</span></div>
     </div>
   </div>
 
@@ -328,7 +373,7 @@ table.bouquet tbody td{padding:6px 10px;border-bottom:1px solid #e5e7eb}
 
   <div class="signatures">
     <div class="sig-box">Signature de l'agent<br/><br/><span style="font-weight:normal;font-size:10px">${partnerName}</span></div>
-    <div class="sig-box">Signature du client<br/><br/><span style="font-weight:normal;font-size:10px">${nomAbonne || "—"}</span></div>
+    <div class="sig-box">Signature du client<br/><br/><span style="font-weight:normal;font-size:10px">${nomAbonne || "-"}</span></div>
   </div>
 
   <div class="footer-note">
@@ -347,9 +392,9 @@ table.bouquet tbody td{padding:6px 10px;border-bottom:1px solid #e5e7eb}
   return `/invoices/facture_${factureId}.html`;
 };
 
-// ══════════════════════════════════════════════════════════════════════════════
+// """"""""""""""""""""""""""""""""""""""""""""""""""""""""""""""""""""""""""""""
 // POST /api/reabonnement — Réabonnement classique
-// ══════════════════════════════════════════════════════════════════════════════
+// """"""""""""""""""""""""""""""""""""""""""""""""""""""""""""""""""""""""""""""
 router.post("/", auth, async (req, res) => {
   const {
     numero_abonne, formule, duree, montant,
@@ -357,12 +402,12 @@ router.post("/", auth, async (req, res) => {
     options = [], nomAbonne = "",
   } = req.body;
   const userId   = req.user.id;
-  const testMode = isTestMode();
+  const testMode = await isTestMode();
   const formuleCode = optionCodeMap[formule] || cleanFujisatValue(formule);
   const numabo = cleanFujisatValue(numero_abonne);
   const decoder = cleanFujisatValue(materialNumber);
   const phone = cleanFujisatValue(telephoneAbonne);
-  console.log(`📋 Réabonnement — TEST_MODE=${testMode}, formule=${formule}, montant=${montant}`);
+  console.log(`x9 Réabonnement — TEST_MODE=${testMode}, formule=${formule}, montant=${montant}`);
 
   const missing = [];
   if (!numero_abonne)  missing.push("numero_abonne");
@@ -379,13 +424,17 @@ router.post("/", auth, async (req, res) => {
     connection = await pool.getConnection();
     await connection.beginTransaction();
 
-    // ✅ On récupère aussi telephone, ville, quartier du partenaire pour la facture
+    const priceMap = await getDbPriceMap(connection, [formuleCode, ...options]);
+    const optionTotal = options.reduce((sum, option) => sum + (priceMap[normalizeCode(option)] || 0), 0);
+    const montantCalcule = ((priceMap[formuleCode] || Number(montant) || 0) + optionTotal) * (Number(duree) || 1);
+
+    //  On récupère aussi telephone, ville, quartier du partenaire pour la facture
     const [[u]] = await connection.query(
       "SELECT wallet_balance, name, prenom, telephone, ville, quartier FROM users WHERE id = ? FOR UPDATE",
       [userId]
     );
     if (!u) { await connection.rollback(); return res.status(404).json({ error: "Utilisateur introuvable" }); }
-    if (Number(u.wallet_balance) < Number(montant)) {
+    if (Number(u.wallet_balance) < Number(montantCalcule)) {
       await connection.rollback();
       return res.status(400).json({ error: "Solde insuffisant" });
     }
@@ -398,8 +447,8 @@ router.post("/", auth, async (req, res) => {
       numeroContrat:   Number(numeroContrat) || 1,
       duree:           Number(duree) || 1,
       telephoneAbonne,
+      optionCode:      mappedOptions[0] || "",
     };
-    if (mappedOptions[0]) payload.optionCode = mappedOptions[0];
 
     let apiResponse;
     try {
@@ -409,26 +458,26 @@ router.post("/", auth, async (req, res) => {
       console.error("Echec Fujisat reabonnement:", details);
       await connection.rollback();
       return res.status(502).json({ error: "Echec du reabonnement Canal+", details });
-      return res.status(502).json({ error: "Échec du réabonnement Canal+", details: err.response?.data || err.message });
+      return res.status(502).json({ error: "0chec du réabonnement Canal+", details: err.response?.data || err.message });
     }
     if (!apiResponse.data?.success) {
       await connection.rollback();
       return res.status(400).json({ error: "Réabonnement refusé par Canal+", details: apiResponse.data });
     }
 
-    // ✅ Commissions partenaire (avec fix English+/Charme via commissionEngine corrigé)
+    //  Commissions partenaire (avec fix English+/Charme via commissionEngine corrigé)
     const commissionResult = await calculateAndApplyCommissions(connection, {
       formule,
       options,
-      montant,
+      montant: montantCalcule,
       userId,
       numeroAbonne:  numero_abonne,
       operationType: "reabonnement",
     });
     const commission = commissionResult.total;
-    const newBalance = Number(u.wallet_balance) - Number(montant);
+    const newBalance = Number(u.wallet_balance) - Number(montantCalcule);
 
-    // ✅ Calcul correct de la date de fin (début + durée - 1 jour)
+    //  Calcul correct de la date de fin (début + durée - 1 jour)
     const dateDebutBrut = apiResponse.data?.debabo || null;
     let dateDebut = dateDebutBrut;
     let dateFin   = calculerDateFin(dateDebutBrut, duree);
@@ -442,30 +491,28 @@ router.post("/", auth, async (req, res) => {
       `INSERT INTO reabonnements
          (users_id, numero_abonne, formule, montant, duree, telephoneAbonne, commission, type_operation, created_at)
        VALUES (?, ?, ?, ?, ?, ?, ?, 'reabonnement', NOW())`,
-      [userId, numero_abonne, formule, montant, duree, telephoneAbonne || "", commission]
+      [userId, numero_abonne, formule, montantCalcule, duree, telephoneAbonne || "", commission]
     );
 
     const partnerName     = `${u.prenom || ""} ${u.name}`.trim();
-    // ✅ Infos partenaire dynamiques sur la facture
+    //  Infos partenaire dynamiques sur la facture
     const partnerPhone    = u.telephone || "+237 656 253 864";
     const partnerLocation = [u.ville, u.quartier].filter(Boolean).join(", ") || "Cameroun";
 
     await connection.query(
       "INSERT INTO notifications (type,message,created_at) VALUES (?,?,NOW())",
-      ["reabonnement", `💰 ${partnerName} → ${numero_abonne} (${formule}) — ${Number(montant).toLocaleString()} FCFA | Commission: ${commission} FCFA${testMode ? " [TEST]" : ""}`]
+      ["reabonnement", ` ${partnerName}   ${numero_abonne} (${formule}) — ${Number(montantCalcule).toLocaleString()} FCFA | Commission: ${commission} FCFA${testMode ? " [TEST]" : ""}`]
     );
 
-    // ✅ Commission admin à 6% sur chaque réabonnement
     await calculateAdminCommission(connection, {
       reabonnementId: ins.insertId,
       userId,
       numeroAbonne:   numero_abonne,
       formuleCode:    formule,
       formuleName:    NOMS_FORMULES[formule] || formule,
-      montant:        Number(montant),
+      montant:        Number(montantCalcule),
       tauxAdmin:      6,
     });
-
     await connection.commit();
 
     const factureUrl = genererFacture({
@@ -478,20 +525,27 @@ router.post("/", auth, async (req, res) => {
       materialNumber,
       formule,
       duree,
-      montant,
+      montant:         montantCalcule,
       type_operation:  "reabonnement",
       dateDebut,
       dateFin,
       numeroContrat,
       options,
+      testMode,
     });
 
     if (req.io) {
-      req.io.emit("new_notification",      { type: "reabonnement", message: `💰 Réabonnement ${formule} — ${numero_abonne}` });
+      req.io.emit("new_notification",      { type: "reabonnement", message: ` Réabonnement ${formule} — ${numero_abonne}` });
       req.io.emit("commission_rules_update", { type: "reabonnement", formule });
       req.io.emit("admin_dashboard_update", { type: "reabonnement", user_id: userId });
       req.io.emit(`partner_dashboard_update_${userId}`, { type: "reabonnement" });
     }
+
+    let adminWhatsapp = "237695225823";
+    try {
+      const [[waRow]] = await connection.query("SELECT valeur FROM app_config WHERE cle = 'admin_whatsapp' LIMIT 1");
+      if (waRow) adminWhatsapp = waRow.valeur;
+    } catch (e) {}
 
     return res.json({
       success:            true,
@@ -501,20 +555,20 @@ router.post("/", auth, async (req, res) => {
       commission_details: commissionResult.details,
       facture_url:        factureUrl,
       test_mode:          testMode,
-      whatsappLink:       `https://wa.me/237656253864?text=${encodeURIComponent(`Réabonnement Canal+ réussi pour ${numero_abonne} (${NOMS_FORMULES[formule] || formule})`)}`,
+      whatsappLink:       `https://wa.me/${adminWhatsapp}?text=${encodeURIComponent(`Réabonnement Canal+ réussi pour ${numero_abonne} (${NOMS_FORMULES[formule] || formule})`)}`,
     });
   } catch (err) {
     if (connection) await connection.rollback();
-    console.error("🔥 ERREUR reabonnement:", err);
+    console.error("x— ERREUR reabonnement:", err);
     return res.status(500).json({ error: "Erreur serveur", details: err.message });
   } finally {
     if (connection) connection.release();
   }
 });
 
-// ══════════════════════════════════════════════════════════════════════════════
+// """"""""""""""""""""""""""""""""""""""""""""""""""""""""""""""""""""""""""""""
 // POST /api/reabonnement/upgrade — Upgrade de formule
-// ══════════════════════════════════════════════════════════════════════════════
+// """"""""""""""""""""""""""""""""""""""""""""""""""""""""""""""""""""""""""""""
 router.post("/upgrade", auth, async (req, res) => {
   const {
     numero_abonne, formule, materialNumber, numeroContrat,
@@ -524,35 +578,45 @@ router.post("/upgrade", auth, async (req, res) => {
     nomAbonne = "",
   } = req.body;
   const userId   = req.user.id;
-  const testMode = isTestMode();
+  const testMode = await isTestMode();
 
   const missing = [];
   if (!numero_abonne)  missing.push("numero_abonne");
   if (!formule)        missing.push("formule");
   if (!materialNumber) missing.push("materialNumber");
   if (!numeroContrat)  missing.push("numeroContrat");
+  if (missing.length > 0) return res.status(400).json({ error: "Données manquantes", missing });
 
   const formuleCode    = optionCodeMap[formule] || formule;
   const currentCode    = formuleActuelle ? (optionCodeMap[formuleActuelle] || formuleActuelle) : null;
-  const prixNouvelle   = PRIX_FORMULES[formuleCode] || Number(montant) || 0;
-  const prixActuelle   = currentCode ? (PRIX_FORMULES[currentCode] || 0) : 0;
+  const prixNouvelle   = PRIX_FORMULES_FALLBACK[formuleCode] || Number(montant) || 0;
+  const prixActuelle   = currentCode ? (PRIX_FORMULES_FALLBACK[currentCode] || 0) : 0;
   const montantFacture = UPGRADE_OPTION_CODES.has(formuleCode)
     ? prixNouvelle
     : prixActuelle > 0
       ? Math.max(0, prixNouvelle - prixActuelle)
       : Number(montant) || 0;
 
-  console.log(`🔄 Upgrade: ${formuleActuelle}(${prixActuelle}) → ${formule}(${prixNouvelle}) = delta ${montantFacture}`);
+  console.log(` Upgrade: ${formuleActuelle}(${prixActuelle})   ${formule}(${prixNouvelle}) = delta ${montantFacture}`);
 
   if (montantFacture <= 0 && !testMode) {
     return res.status(400).json({ error: `Montant invalide. Calcul: ${prixNouvelle} - ${prixActuelle} = ${montantFacture} FCFA` });
   }
-  if (missing.length > 0) return res.status(400).json({ error: "Données manquantes", missing });
 
   let connection;
   try {
     connection = await pool.getConnection();
     await connection.beginTransaction();
+
+    const priceMap = await getDbPriceMap(connection, [formuleCode, currentCode, ...options].filter(Boolean));
+    const prixNouvelle = priceMap[formuleCode] || Number(montant) || 0;
+    const prixActuelle = currentCode ? (priceMap[currentCode] || 0) : 0;
+    const optionsTotal = options.reduce((sum, option) => sum + (priceMap[normalizeCode(option)] || 0), 0);
+    const montantFacture = UPGRADE_OPTION_CODES.has(formuleCode)
+      ? prixNouvelle + optionsTotal
+      : prixActuelle > 0
+        ? Math.max(0, prixNouvelle - prixActuelle) + optionsTotal
+        : (Number(montant) || 0) + optionsTotal;
 
     const [[u]] = await connection.query(
       "SELECT wallet_balance, name, prenom, telephone, ville, quartier FROM users WHERE id = ? FOR UPDATE",
@@ -575,32 +639,28 @@ router.post("/upgrade", auth, async (req, res) => {
 
     let apiResponse;
     try {
-      apiResponse = await callFujisat(`${process.env.FUJISAT_URL}/public-api/operation/upgrade/execute`, payload);
+      apiResponse = await callFujisat(`${fujisatBaseUrl()}/public-api/operation/upgrade/execute`, payload);
     } catch (err) {
       await connection.rollback();
-      return res.status(502).json({ error: "Échec de l'upgrade Canal+", details: err.response?.data || err.message });
+      return res.status(502).json({ error: "0chec de l'upgrade Canal+", details: err.response?.data || err.message });
     }
     if (!apiResponse.data?.success) {
       await connection.rollback();
       return res.status(400).json({ error: "Upgrade refusé par Canal+", details: apiResponse.data });
     }
 
-   // ✅ Pour English+ et Charme upgradés directement comme formule principale,
-// on s'assure que le montant utilisé est le prix réel de l'option
-const PRIX_OPTIONS = {
-  "ENGLISH PLUS DD": 5000,
-  "CHARME":          7000,
-};
-const montantPourCommission = PRIX_OPTIONS[formule] || montantFacture;
+    //  Pour English+ et Charme upgradés directement comme formule principale,
+    // on s'assure que le montant utilisé est le prix réel de l'option
+    const montantPourCommission = priceMap[formuleCode] || montantFacture;
 
-const commissionResult = await calculateAndApplyCommissions(connection, {
-  formule,
-  options,
-  montant: montantPourCommission,
-  userId,
-  numeroAbonne:  numero_abonne,
-  operationType: "upgrade",
-});
+    const commissionResult = await calculateAndApplyCommissions(connection, {
+      formule,
+      options,
+      montant: montantPourCommission,
+      userId,
+      numeroAbonne:  numero_abonne,
+      operationType: "upgrade",
+    });
     const commission = commissionResult.total;
     const newBalance = Number(u.wallet_balance) - (testMode ? 0 : montantFacture);
 
@@ -622,10 +682,10 @@ const commissionResult = await calculateAndApplyCommissions(connection, {
 
     await connection.query(
       "INSERT INTO notifications (type,message,created_at) VALUES (?,?,NOW())",
-      ["upgrade", `🔄 ${partnerName} upgrade ${numero_abonne} → ${formule} | ${montantFacture} FCFA | Commission: ${commission} FCFA${testMode ? " [TEST]" : ""}`]
+      ["upgrade", ` ${partnerName} upgrade ${numero_abonne}   ${formule} | ${montantFacture} FCFA | Commission: ${commission} FCFA${testMode ? " [TEST]" : ""}`]
     );
 
-    // ✅ Commission admin 6% sur upgrade aussi
+    //  Commission admin 6% sur upgrade aussi
     await calculateAdminCommission(connection, {
       reabonnementId: ins.insertId,
       userId,
@@ -638,7 +698,7 @@ const commissionResult = await calculateAndApplyCommissions(connection, {
 
     await connection.commit();
 
-    // ✅ Pour les upgrades : dateDebut/dateFin = même que la formule existante
+    //  Pour les upgrades : dateDebut/dateFin = même que la formule existante
     // On récupère depuis la réponse API si disponible
     const dateDebutUpgrade = apiResponse.data?.debabo || new Date().toLocaleDateString("fr-FR", { day: "2-digit", month: "2-digit", year: "numeric" });
     const dateFinUpgrade   = apiResponse.data?.finabo  || calculerDateFin(dateDebutUpgrade, 1);
@@ -659,14 +719,21 @@ const commissionResult = await calculateAndApplyCommissions(connection, {
       dateFin:         dateFinUpgrade,
       numeroContrat,
       options,
+      testMode,
     });
 
     if (req.io) {
-      req.io.emit("new_notification",      { type: "upgrade", message: `🔄 Upgrade ${formule} — ${numero_abonne}` });
+      req.io.emit("new_notification",      { type: "upgrade", message: ` Upgrade ${formule} — ${numero_abonne}` });
       req.io.emit("commission_rules_update", { type: "upgrade", formule });
       req.io.emit("admin_dashboard_update", { type: "upgrade", user_id: userId });
       req.io.emit(`partner_dashboard_update_${userId}`, { type: "upgrade" });
     }
+
+    let adminWhatsapp = "237695225823";
+    try {
+      const [[waRow]] = await connection.query("SELECT valeur FROM app_config WHERE cle = 'admin_whatsapp' LIMIT 1");
+      if (waRow) adminWhatsapp = waRow.valeur;
+    } catch (e) {}
 
     return res.json({
       success:            true,
@@ -680,11 +747,11 @@ const commissionResult = await calculateAndApplyCommissions(connection, {
       nouvelleFormule:    formule,
       facture_url:        factureUrl,
       test_mode:          testMode,
-      whatsappLink:       `https://wa.me/237656253864?text=${encodeURIComponent(`Upgrade Canal+ réussi: ${numero_abonne} → ${NOMS_FORMULES[formule] || formule}`)}`,
+      whatsappLink:       `https://wa.me/${adminWhatsapp}?text=${encodeURIComponent(`Upgrade Canal+ réussi: ${numero_abonne}   ${NOMS_FORMULES[formule] || formule}`)}`,
     });
   } catch (err) {
     if (connection) await connection.rollback();
-    console.error("🔥 ERREUR upgrade:", err);
+    console.error("x— ERREUR upgrade:", err);
     return res.status(500).json({ error: "Erreur serveur", details: err.message });
   } finally {
     if (connection) connection.release();

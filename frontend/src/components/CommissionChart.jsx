@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
 const RATE_LEVELS = [0, 4, 4.5, 5, 5.5, 6, 6.5, 7, 7.5, 8, 8.5, 9, 9.5, 10];
 const RATE_LABELS = new Set(RATE_LEVELS);
@@ -9,9 +9,15 @@ const FALLBACK_RULES = [
   { formule_code: "CHARME", formule_name: "Charme", price: 7000, commission_actuelle: 280, current_rate: 4, cashbox_amount: 0, activation_count: 0, in_chart: 1, display_order: 3 },
   { formule_code: "EVDD", formule_name: "Évasion", price: 10500, commission_actuelle: 420, current_rate: 4, cashbox_amount: 0, activation_count: 0, in_chart: 1, display_order: 4 },
   { formule_code: "ACPDD", formule_name: "Acces+", price: 15000, commission_actuelle: 600, current_rate: 4, cashbox_amount: 0, activation_count: 0, in_chart: 1, display_order: 5 },
-  { formule_code: "EVPDD", formule_name: "Evasion+", price: 20000, commission_actuelle: 800, current_rate: 4, cashbox_amount: 0, activation_count: 0, in_chart: 1, display_order: 6 },
   { formule_code: "TCADD", formule_name: "Tout Canal+", price: 28000, commission_actuelle: 1120, current_rate: 4, cashbox_amount: 0, activation_count: 0, in_chart: 1, display_order: 7 },
 ];
+
+const DISABLED_CODES = new Set(["EVPDD"]);
+const isDisabledRule = (rule = {}) => {
+  const code = String(rule.formule_code || rule.code || rule.formule || "").toUpperCase();
+  const name = String(rule.formule_name || rule.name || rule.formule || "").toLowerCase();
+  return DISABLED_CODES.has(code) || name.includes("evasion+") || name.includes("evasion +") || name.includes("vasion+") || name.includes("vasion +");
+};
 
 const CODE_ALIASES = {
   Access: "ACDD",
@@ -51,7 +57,8 @@ export default function CommissionChart({
   const canvasRef = useRef(null);
   const chartRef = useRef(null);
   const rulesRef = useRef([]);
-  const [now, setNow] = useState(Date.now());
+  const [now, setNow] = useState(() => Date.now());
+  const [isMobile, setIsMobile] = useState(() => typeof window !== "undefined" && window.innerWidth < 640);
 
   const rules = useMemo(() => {
     const source = commissionsAdmin.length > 0 ? commissionsAdmin : commissionsParFormule;
@@ -60,7 +67,7 @@ export default function CommissionChart({
       return [normalized.code, normalized];
     }));
 
-    source.map(normalizeRule).forEach((incoming) => {
+    source.filter((rule) => !isDisabledRule(rule)).map(normalizeRule).forEach((incoming) => {
       const existing = byCode.get(incoming.code);
       if (!existing) return;
       const merged = {
@@ -76,11 +83,16 @@ export default function CommissionChart({
     });
 
     return Array.from(byCode.values())
-      .filter((r) => r.inChart)
+      .filter((r) => r.inChart && !isDisabledRule(r))
       .sort((a, b) => a.order - b.order);
   }, [commissionsAdmin, commissionsParFormule]);
 
-  rulesRef.current = rules;
+  useEffect(() => {
+    const handleResize = () => setIsMobile(window.innerWidth < 640);
+    handleResize();
+    window.addEventListener("resize", handleResize);
+    return () => window.removeEventListener("resize", handleResize);
+  }, []);
 
   useEffect(() => {
     const remainingTimes = rules
@@ -93,12 +105,12 @@ export default function CommissionChart({
     return () => clearTimeout(timeout);
   }, [rules, now]);
 
-  const activeTrend = (rule) => {
+  const activeTrend = useCallback((rule) => {
     if (!rule.updatedAt || rule.trend === "base") return "base";
     const age = now - new Date(rule.updatedAt).getTime();
     if (rule.trend === "down" && rule.rate === 4 && age >= 30 * 60 * 1000) return "base";
     return rule.trend;
-  };
+  }, [now]);
 
   const nextReset = useMemo(() => {
     const now = new Date();
@@ -108,24 +120,23 @@ export default function CommissionChart({
     return reset.toLocaleString("fr-FR", { hour: "2-digit", minute: "2-digit", day: "2-digit", month: "2-digit" });
   }, []);
 
-  const buildOrUpdate = () => {
+  const buildOrUpdate = useCallback(() => {
     if (!canvasRef.current || typeof window.Chart === "undefined") return;
+    rulesRef.current = rules;
 
     const styles = getComputedStyle(document.documentElement);
-   const primary = styles.getPropertyValue("--primary").trim() || "#378ADD";
-   const accent = `hsl(${styles.getPropertyValue("--chart-2").trim()})`;
+    const primary = styles.getPropertyValue("--primary").trim() || "#378ADD";
     const textColor = styles.getPropertyValue("--foreground").trim() || "#111827";
     const gridColor = styles.getPropertyValue("--border").trim() || "#e5e7eb";
 
     const labels = rules.map((r) => r.name);
     const rates = rules.map((r) => r.rate);
-    const red = "#ef4444";
    const colors = rules.map((r) => {
   const trend = activeTrend(r);
   if (trend === "down") return "#ef4444";   // rouge
   if (trend === "up")   return "#22c55e";   // vert
   return primary;
-  
+
 });
 
     const data = {
@@ -138,13 +149,14 @@ export default function CommissionChart({
         borderSkipped: false,
         barPercentage: 0.89,
         categoryPercentage: 0.9,
+        clip: false,
       }],
     };
 
     const options = {
       responsive: true,
       maintainAspectRatio: false,
-      layout: { padding: { top: 20 } },
+      layout: { padding: { top: 52 } },
       plugins: {
         legend: { display: false },
         tooltip: {
@@ -167,7 +179,14 @@ export default function CommissionChart({
       },
       scales: {
         x: {
-          ticks: { font: { size: 11 }, color: textColor, maxRotation: 0, autoSkip: false },
+          ticks: {
+            font: { size: isMobile ? 10 : 11 },
+            color: textColor,
+            maxRotation: isMobile ? 55 : 0,
+            minRotation: isMobile ? 55 : 0,
+            autoSkip: false,
+            padding: isMobile ? 8 : 3,
+          },
           grid: { display: false },
           border: { display: false },
         },
@@ -190,22 +209,42 @@ export default function CommissionChart({
 
     const valueLabels = {
       id: "valueLabels",
-      afterDatasetsDraw(chart) {
+      afterDraw(chart) {
         const { ctx } = chart;
         ctx.save();
-        ctx.font = "700 11px sans-serif";
+        ctx.font = "800 11px sans-serif";
         ctx.textAlign = "center";
-        ctx.fillStyle = textColor;
         chart.getDatasetMeta(0).data.forEach((bar, index) => {
-          const r = rulesRef.current[index];
+          const sourceRules = chart.$rulesForLabels || rulesRef.current;
+          const r = sourceRules[index];
           if (!r) return;
-          ctx.fillText(`${Math.min(Math.round(r.commission), r.maxCommission).toLocaleString("fr-FR")} F`, bar.x, bar.y - 8);
+          const label = `${Math.min(Math.round(r.commission), r.maxCommission).toLocaleString("fr-FR")} F`;
+          const metrics = ctx.measureText(label);
+          const width = metrics.width + 12;
+          const height = 18;
+          const x = bar.x - width / 2;
+          const y = Math.max(8, bar.y - 24);
+          ctx.fillStyle = "rgba(255,255,255,0.94)";
+          ctx.strokeStyle = "rgba(15,23,42,0.14)";
+          ctx.lineWidth = 1;
+          if (ctx.roundRect) {
+            ctx.beginPath();
+            ctx.roundRect(x, y, width, height, 6);
+            ctx.fill();
+            ctx.stroke();
+          } else {
+            ctx.fillRect(x, y, width, height);
+            ctx.strokeRect(x, y, width, height);
+          }
+          ctx.fillStyle = textColor;
+          ctx.fillText(label, bar.x, y + 13);
         });
         ctx.restore();
       },
     };
 
     if (chartRef.current) {
+      chartRef.current.$rulesForLabels = rules;
       chartRef.current.data = data;
       chartRef.current.options = options;
       chartRef.current.update("none");
@@ -218,7 +257,7 @@ export default function CommissionChart({
       options,
       plugins: [valueLabels],
     });
-  };
+  }, [activeTrend, isAdmin, isMobile, rules]);
 
   useEffect(() => {
     if (typeof window.Chart !== "undefined") {
@@ -235,7 +274,7 @@ export default function CommissionChart({
     script.dataset.chartjs = "true";
     script.onload = buildOrUpdate;
     document.head.appendChild(script);
-  }, [rules, now]);
+  }, [buildOrUpdate]);
 
   useEffect(() => () => {
     if (chartRef.current) {
@@ -278,7 +317,7 @@ export default function CommissionChart({
           )}
         </div>
 
-        <div style={{ position: "relative", width: "100%", height: "270px", marginBottom: "12px" }}>
+        <div style={{ position: "relative", width: "100%", height: isMobile ? "315px" : "270px", marginBottom: "12px" }}>
           <canvas ref={canvasRef} role="img" aria-label="Courbe des pourcentages de commissions Canal+">Commissions Canal+.</canvas>
         </div>
 

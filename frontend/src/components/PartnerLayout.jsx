@@ -111,7 +111,7 @@ export default function PartnerLayout({ children }) {
 
         {/* Barre de navigation mobile : Statistiques excluses pour garder l'écran aéré */}
         <nav className="lg:hidden fixed bottom-0 left-0 right-0 z-20 flex items-center justify-around bg-card border-t border-border pt-2.5 pb-5">
-          {navItems.filter(({ id }) => id !== "statistiques").map(({ id, label, path }, i) => {
+          {navItems.filter(({ id }) => id !== "statistiques").map(({ id, label, path }) => {
             // Trouver l'index correct pour l'icône car le filtre peut décaler les index
             const originalIndex = navItems.findIndex(item => item.id === id);
             const Icon = navIcons[originalIndex];

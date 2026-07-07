@@ -1,6 +1,7 @@
 import React, { useEffect, useState, useCallback, useMemo, useRef } from "react";
-import { useNavigate } from "react-router-dom";
-import { io } from "socket.io-client";
+import { useNavigate, useSearchParams } from "react-router-dom";
+import Swal from "sweetalert2";
+import InvoiceViewer from "../components/InvoiceViewer";
 import logo from "../assets/logo.png";
 import cfgImg from "../assets/cfg.jpg";
 import abonnementsImg from "../assets/abonnements.png";
@@ -8,22 +9,32 @@ import accessoiresImg from "../assets/Dcodeur.png";
 import technicienImg from "../assets/inst.jpg";
 import { BarChart, Bar, XAxis, YAxis, Tooltip, ResponsiveContainer } from "recharts";
 import CommissionChart from "../components/CommissionChart";
+import AiAssistant from "../components/AiAssistant";
 import { usePagination } from "../components/Pagination";
-import { API_URL, SOCKET_URL, serverUrl } from "../lib/api";
+import { API_URL, serverUrl } from "../lib/api";
+import { createAppSocket } from "../lib/socket";
+import { notifyUser, requestNotificationPermission } from "../lib/notifications";
 import { clearSession, decodeToken, getToken, hasActiveSession, installActivityTracker } from "../lib/session";
 
 const API        = API_URL;
 
 const tokenValid = () => hasActiveSession("partner");
 const getUserId  = () => decodeToken(getToken())?.id || null;
+const isDisabledFormule = (item = {}) => {
+  const code = String(item.formule_code || item.code || item.formule || "").toUpperCase();
+  const name = String(item.formule_name || item.name || item.label || item.formule || "").toLowerCase();
+  return code === "EVPDD" || name.includes("evasion+") || name.includes("evasion +") || name.includes("vasion+") || name.includes("vasion +");
+};
+const activeFormules = (items = []) => items.filter((item) => !isDisabledFormule(item));
 
-// ── Icons ─────────────────────────────────────────────────────────────────────
+//  Icons 
 const IconHome     = ({ active }) => <svg width="20" height="20" viewBox="0 0 24 24" fill={active?"#e53935":"none"} stroke={active?"#e53935":"#9ca3af"} strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M3 9.5L12 3l9 6.5V21a1 1 0 0 1-1 1H4a1 1 0 0 1-1-1V9.5z"/></svg>;
 const IconTrans    = ({ active }) => <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke={active?"#e53935":"#9ca3af"} strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M7 16l-4-4 4-4M17 8l4 4-4 4M13 4l-2 16"/></svg>;
 const IconStats    = ({ active }) => <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke={active?"#e53935":"#9ca3af"} strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M18 20V10M12 20V4M6 20v-6"/></svg>;
 const IconWallet   = ({ active }) => <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke={active?"#e53935":"#9ca3af"} strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><rect x="2" y="7" width="20" height="15" rx="2"/><path d="M16 7V5a2 2 0 0 0-2-2h-4a2 2 0 0 0-2 2v2"/><circle cx="12" cy="14" r="2"/></svg>;
 const IconSettings = ({ active }) => <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke={active?"#e53935":"#9ca3af"} strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83-2.83l.06-.06A1.65 1.65 0 0 0 4.68 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 2.83-2.83l.06.06A1.65 1.65 0 0 0 9 4.68a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 2.83l-.06.06A1.65 1.65 0 0 0 19.4 9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg>;
 const IconDecoder  = ({ active }) => <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke={active?"#e53935":"#9ca3af"} strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><rect x="2" y="7" width="20" height="15" rx="2"/><path d="M16 7V5a2 2 0 0 0-2-2h-4a2 2 0 0 0-2 2v2"/></svg>;
+const IconOffers   = ({ active }) => <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke={active?"#e53935":"#9ca3af"} strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M20 7H4"/><path d="M20 12H4"/><path d="M20 17H4"/><path d="M7 4v16"/></svg>;
 const IconBell     = () => <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M18 8A6 6 0 0 0 6 8c0 7-3 9-3 9h18s-3-2-3-9"/><path d="M13.73 21a2 2 0 0 1-3.46 0"/></svg>;
 const IconChevron  = ({ open }) => <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" style={{transform:open?"rotate(180deg)":"rotate(0deg)",transition:"transform 0.2s"}}><polyline points="6 9 12 15 18 9"/></svg>;
 const IconChevronR = () => <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="#9ca3af" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M9 18l6-6-6-6"/></svg>;
@@ -32,7 +43,7 @@ const IconClose    = () => <svg width="20" height="20" viewBox="0 0 24 24" fill=
 const IconCamera   = () => <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M23 19a2 2 0 0 1-2 2H3a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h4l2-3h6l2 3h4a2 2 0 0 1 2 2z"/><circle cx="12" cy="13" r="4"/></svg>;
 
 const fmt     = (n) => Number(n||0).toLocaleString("fr-FR");
-const fmtDate = (d) => d ? new Date(d).toLocaleDateString("fr-FR",{day:"2-digit",month:"short",year:"numeric"}) : "—";
+const fmtDate = (d) => d ? new Date(d).toLocaleDateString("fr-FR",{day:"2-digit",month:"short",year:"numeric"}) : "";
 
 const inputCls = (err) =>
   `w-full border rounded-lg px-4 py-3 text-sm text-foreground bg-background focus:outline-none focus:ring-2 focus:ring-ring transition-colors ${err?"border-destructive":"border-input"}`;
@@ -47,7 +58,7 @@ const Field = ({ label, error, children }) => (
 
 const Spinner = () => <svg className="animate-spin" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><circle cx="12" cy="12" r="10" strokeOpacity=".25"/><path d="M12 2a10 10 0 0 1 10 10"/></svg>;
 
-// ── Avatar partenaire ─────────────────────────────────────────────────────────
+//  Avatar partenaire 
 const Avatar = ({ photoUrl, name, size = 40 }) => {
   const initiale = (name || "?")[0].toUpperCase();
   if (photoUrl) {
@@ -61,7 +72,7 @@ const Avatar = ({ photoUrl, name, size = 40 }) => {
   );
 };
 
-// ── Modal ─────────────────────────────────────────────────────────────────────
+//  Modal 
 const Modal = ({ onClose, children }) => (
   <div className="fixed inset-0 z-50 flex items-end sm:items-center justify-center"
        style={{ background:"rgba(0,0,0,0.6)", backdropFilter:"blur(4px)" }}
@@ -96,10 +107,10 @@ const SuccessScreen = ({ title, message, onClose }) => (
   </div>
 );
 
-// ── Modal Recharger ───────────────────────────────────────────────────────────
+//  Modal Recharger 
 const OPERATEURS = ["MTN Mobile Money","Orange Money","Express Union","Autre"];
 
-const ModalRecharger = ({ onClose }) => {
+const ModalRecharger = ({ onClose, onSuccess }) => {
   const [form, setForm]       = useState({ numero:"", operateur:"", id_transaction:"", montant:"", date_operation:new Date().toISOString().slice(0,10) });
   const [capture, setCapture] = useState(null);
   const [preview, setPreview] = useState(null);
@@ -131,6 +142,7 @@ const ModalRecharger = ({ onClose }) => {
       body.append("date_operation",form.date_operation); body.append("capture",capture);
       const res=await fetch(`${API}/admin/notifications`,{method:"POST",headers:{Authorization:`Bearer ${getToken()}`},body});
       if(!res.ok){const d=await res.json().catch(()=>{});throw new Error(d?.error||`Erreur ${res.status}`);}
+      onSuccess?.();
       setSuccess(true);
     } catch(err){setErrors(p=>({...p,global:err.message||"Erreur lors de l'envoi."}));}
     finally{setLoading(false);}
@@ -165,13 +177,13 @@ const ModalRecharger = ({ onClose }) => {
         {errors.global && <p className="text-sm text-destructive bg-destructive/10 border border-destructive/20 rounded-lg px-4 py-3">{errors.global}</p>}
       </div>
       <button onClick={handleSubmit} disabled={loading} className="flex items-center justify-center gap-2 w-full bg-primary text-primary-foreground font-semibold py-4 rounded-lg text-sm disabled:opacity-60 hover:bg-primary/90">
-        {loading?<Spinner/>:null}{loading?"Envoi…":"Valider la demande"}
+        {loading ? <Spinner /> : null}{loading ? "Envoi..." : "Valider la demande"}
       </button>
     </Modal>
   );
 };
 
-// ── Modal Confirm Balance ──────────────────────────────────────────────────────
+//  Modal Confirm Balance 
 const ModalConfirmBalance = ({ commissionBalance, onClose, onConfirm, loading }) => (
   <Modal onClose={onClose}>
     <ModalHeader icon={{bg:"#f0fdf4",el:<svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="#16a34a" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><circle cx="12" cy="12" r="10"/><path d="M12 6v6l4 2"/></svg>}}
@@ -184,13 +196,13 @@ const ModalConfirmBalance = ({ commissionBalance, onClose, onConfirm, loading })
     <div className="flex gap-3">
       <button onClick={onClose} className="flex-1 px-4 py-3 rounded-lg border border-border text-sm font-semibold text-muted-foreground hover:bg-muted/30">Annuler</button>
       <button onClick={onConfirm} disabled={loading} className="flex-1 px-4 py-3 rounded-lg bg-green-600 hover:bg-green-700 text-white text-sm font-semibold disabled:opacity-60 flex items-center justify-center gap-2">
-        {loading?<Spinner/>:null}{loading?"Transfert…":"Oui, transférer"}
+        {loading ? <Spinner /> : null}{loading ? "Transfert..." : "Oui, transférer"}
       </button>
     </div>
   </Modal>
 );
 
-// ── Modal Technicien ───────────────────────────────────────────────────────────
+//  Modal Technicien 
 const ModalTechnicien = ({ onClose }) => {
   const [form, setForm]     = useState({ nom:"", telephone:"", ville:"", quartier:"", probleme:"" });
   const [errors, setErrors] = useState({});
@@ -249,20 +261,21 @@ const ModalTechnicien = ({ onClose }) => {
   );
 };
 
-// ── Nav items ──────────────────────────────────────────────────────────────────
+//  Nav items 
 const navItems = [
   { id:"accueil",      label:"Accueil",      Icon:IconHome     },
   { id:"transactions", label:"Transactions", Icon:IconTrans    },
   { id:"statistiques", label:"Statistiques", Icon:IconStats    },
   { id:"portefeuille", label:"Portefeuille", Icon:IconWallet   },
+  { id:"offres",       label:"Offres",       Icon:IconOffers   },
   { id:"decodeurs",    label:"Décodeurs",    Icon:IconDecoder  },
   { id:"parametres",   label:"Paramètres",   Icon:IconSettings },
 ];
 
 const navMobileFixed = ["accueil","transactions","portefeuille","parametres"];
-const navMobileExtra = ["statistiques","decodeurs"];
+const navMobileExtra = ["statistiques","offres","decodeurs"];
 
-// ✅ Bouton Réabonnement vient EN PREMIER avant Abonnement
+//  Bouton Réabonnement vient EN PREMIER avant Abonnement
 const services = [
   { id:"reabonnement", label:"Réabonnement", image:abonnementsImg, route:"/reabonnement"  },
   { id:"abonnement",   label:"Abonnement",   image:cfgImg,         route:"/abonnements"   },
@@ -270,8 +283,8 @@ const services = [
   { id:"accessoire",   label:"Accessoire",   image:accessoiresImg, route:"/boutique"      },
 ];
 
-// ── PAGE ACCUEIL ───────────────────────────────────────────────────────────────
-const PageAccueil = ({ message, wallet, commissionBalance, commissionsParFormule, commissionRules, navigate, adminWhatsapp, userData }) => {
+//  PAGE ACCUEIL 
+const PageAccueil = ({ message, wallet, commissionBalance, commissionsParFormule, commissionRules, navigate, adminWhatsapp }) => {
   const [showTech, setShowTech] = useState(false);
 
   // Couleurs moins agressives pour les cartes portefeuille et commissions
@@ -284,7 +297,7 @@ const PageAccueil = ({ message, wallet, commissionBalance, commissionsParFormule
 
       <CommissionChart commissionsParFormule={commissionsParFormule} isAdmin={false} commissionsAdmin={commissionRules}/>
 
-      {/* ✅ Couleurs moins agressives : slate au lieu de black/dark */}
+      {/*  Couleurs moins agressives : slate au lieu de black/dark */}
       <div className="grid gap-4 grid-cols-2">
         <div className="bg-slate-700 rounded-xl px-4 py-5 flex items-center justify-between shadow border border-slate-600/40">
           <div>
@@ -302,21 +315,21 @@ const PageAccueil = ({ message, wallet, commissionBalance, commissionsParFormule
         </div>
       </div>
 
-      {/* ✅ "Nos services" plus visible */}
+      {/*  "Nos services" plus visible */}
       <div className="flex items-center gap-3 my-1">
         <div className="h-px flex-1 bg-border"/>
         <p className="text-sm font-bold text-foreground tracking-wide uppercase">Nos Services</p>
         <div className="h-px flex-1 bg-border"/>
       </div>
 
-      {/* ✅ Images non étirées : object-contain dans un conteneur fixe */}
+      {/*  Images non étirées : object-contain dans un conteneur fixe */}
       <div className="grid grid-cols-2 gap-3">
         {services.map(({id,label,image,route})=>(
           <button key={id}
                   onClick={()=>{ if(id==="technicien"){setShowTech(true);return;} route&&navigate(route); }}
                   className="flex flex-col rounded-xl overflow-hidden border border-border bg-card active:scale-95 hover:-translate-y-1 transition-transform duration-150 shadow-sm">
             <div className="bg-white h-28 w-full flex items-center justify-center p-3">
-              {/* ✅ object-contain pour que les images ne soient pas étirées */}
+              {/*  object-contain pour que les images ne soient pas étirées */}
               <img src={image} alt={label} className="h-full w-full object-contain"/>
             </div>
             <div className="bg-slate-800 text-white text-[11px] uppercase tracking-tight font-bold py-3 text-center w-full">{label}</div>
@@ -324,7 +337,7 @@ const PageAccueil = ({ message, wallet, commissionBalance, commissionsParFormule
         ))}
       </div>
 
-      <a href={`https://wa.me/${adminWhatsapp||"237656253864"}`} target="_blank" rel="noreferrer"
+      <a href={`https://wa.me/${adminWhatsapp||"237695225823"}`} target="_blank" rel="noreferrer"
          className="flex items-center justify-center gap-2 w-full bg-green-600 hover:bg-green-700 text-white font-semibold py-3.5 rounded-lg transition-all shadow-sm">
         <svg width="18" height="18" viewBox="0 0 24 24" fill="white"><path d="M17.472 14.382c-.297-.149-1.758-.867-2.03-.967-.273-.099-.471-.148-.67.15-.197.297-.767.966-.94 1.164-.173.199-.347.223-.644.075-.297-.15-1.255-.463-2.39-1.475-.883-.788-1.48-1.761-1.653-2.059-.173-.297-.018-.458.13-.606.134-.133.298-.347.446-.52.149-.174.198-.298.298-.497.099-.198.05-.371-.025-.52-.075-.149-.669-1.612-.916-2.207-.242-.579-.487-.5-.669-.51a2.79 2.79 0 0 0-.57-.01c-.198 0-.52.074-.792.372-.272.297-1.04 1.016-1.04 2.479 0 1.462 1.065 2.875 1.213 3.074.149.198 2.096 3.2 5.077 4.487.709.306 1.262.489 1.694.625.712.227 1.36.195 1.871.118.571-.085 1.758-.719 2.006-1.413.248-.694.248-1.289.173-1.413z"/><path d="M12 0C5.373 0 0 5.373 0 12c0 2.123.556 4.116 1.528 5.845L.057 23.428a.5.5 0 0 0 .515.572l5.76-1.511A11.943 11.943 0 0 0 12 24c6.627 0 12-5.373 12-12S18.627 0 12 0zm0 22a9.956 9.956 0 0 1-5.073-1.385l-.362-.214-3.755.984.999-3.648-.235-.374A9.953 9.953 0 0 1 2 12C2 6.477 6.477 2 12 2s10 4.477 10 10-4.477 10-10 10z"/></svg>
         Assistance WhatsApp
@@ -335,11 +348,12 @@ const PageAccueil = ({ message, wallet, commissionBalance, commissionsParFormule
   );
 };
 
-// ── PAGE TRANSACTIONS ──────────────────────────────────────────────────────────
+//  PAGE TRANSACTIONS 
 const PageTransactions = ({ transactions = [] }) => {
   const [search, setSearch]       = useState("");
   const [filterType, setFilterType] = useState("tous");
   const [expanded, setExpanded]   = useState(null);
+  const [invoiceView, setInvoiceView] = useState(null);
 
   const filtered = useMemo(()=>transactions.filter(t=>{
     const q  = search.toLowerCase();
@@ -366,7 +380,7 @@ const PageTransactions = ({ transactions = [] }) => {
         ))}
       </div>
       <div className="flex gap-2">
-        <input type="text" placeholder="Rechercher…" value={search} onChange={e=>setSearch(e.target.value)}
+        <input type="text" placeholder="Rechercher..." value={search} onChange={e=>setSearch(e.target.value)}
                className="flex-1 border border-input rounded-lg px-4 py-2.5 text-sm bg-background text-foreground focus:outline-none focus:ring-2 focus:ring-ring"/>
         <select value={filterType} onChange={e=>setFilterType(e.target.value)}
                 className="border border-input rounded-lg px-3 py-2.5 text-sm bg-background text-foreground focus:outline-none focus:ring-2 focus:ring-ring">
@@ -384,7 +398,7 @@ const PageTransactions = ({ transactions = [] }) => {
             <div key={t.id??i} className={i!==0?"border-t border-border":""}>
               <div className="flex items-center justify-between px-5 py-4 cursor-pointer hover:bg-muted/30" onClick={()=>setExpanded(isOpen?null:i)}>
                 <div className="flex-1 min-w-0">
-                  <p className="text-sm font-medium text-foreground truncate">{t.type_operation==="upgrade"?"Upgrade":"Réabonnement"} – {t.formule||"—"}</p>
+                  <p className="text-sm font-medium text-foreground truncate">{t.type_operation==="upgrade"?"Upgrade":"Réabonnement"}  {t.formule||""}</p>
                   <p className="text-xs text-muted-foreground mt-0.5">{t.numero_abonne} · {fmtDate(t.created_at)}</p>
                 </div>
                 <div className="flex items-center gap-3 ml-3 flex-shrink-0">
@@ -399,12 +413,12 @@ const PageTransactions = ({ transactions = [] }) => {
                 <div className="px-5 pb-4 flex items-center gap-3 bg-muted/30 border-t border-border flex-wrap">
                   {t.facture_url ? (
                     <>
-                      <a href={`${SOCKET_URL}${t.facture_url}`} target="_blank" rel="noreferrer"
+                      <button type="button" onClick={() => setInvoiceView({ url: t.facture_url, print: false })}
                          className="flex items-center gap-1.5 text-xs font-medium text-primary bg-primary/10 border border-primary/20 rounded-lg px-3 py-2 hover:bg-primary/20">
                         <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/></svg>
                         Voir facture
-                      </a>
-                      <button onClick={()=>{const w=window.open(`${SOCKET_URL}${t.facture_url}`,"_blank");if(w){w.focus();setTimeout(()=>w.print(),800);}}}
+                      </button>
+                      <button onClick={() => setInvoiceView({ url: t.facture_url, print: true })}
                               className="flex items-center gap-1.5 text-xs font-medium text-foreground bg-card border border-border rounded-lg px-3 py-2 hover:bg-muted/30">
                         <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><polyline points="6 9 6 2 18 2 18 9"/><path d="M6 18H4a2 2 0 0 1-2-2v-5a2 2 0 0 1 2-2h16a2 2 0 0 1 2 2v5a2 2 0 0 1-2 2h-2"/><rect x="6" y="14" width="12" height="8"/></svg>
                         Imprimer
@@ -418,11 +432,18 @@ const PageTransactions = ({ transactions = [] }) => {
         })}
         <PaginationBar/>
       </div>
+      {invoiceView && (
+        <InvoiceViewer
+          invoiceUrl={invoiceView.url}
+          autoPrint={invoiceView.print}
+          onClose={() => setInvoiceView(null)}
+        />
+      )}
     </div>
   );
 };
 
-// ── PAGE STATISTIQUES ──────────────────────────────────────────────────────────
+//  PAGE STATISTIQUES 
 const PageStatistiques = ({ stats, commissionsParFormule }) => (
   <div className="flex flex-col gap-5">
     <div className="bg-primary rounded-lg px-6 py-5">
@@ -459,9 +480,51 @@ const PageStatistiques = ({ stats, commissionsParFormule }) => (
   </div>
 );
 
-// ── PAGE PORTEFEUILLE ──────────────────────────────────────────────────────────
-// ✅ Redesign complet : Solde disponible → Commissions cumulées → 2 boutons sur même ligne
-const PagePortefeuille = ({ wallet, setWallet, commissionBalance, setCommissionBalance, operationsWallet, boutonBalanceActif }) => {
+
+const offerCards = [
+  { name: "Tout Canal+", price: 28000, headline: "L'offre complète Canal+", channels: "Plus de 350 chaînes TV et radio", image: "/toutcanal+.png", featured: true },
+  { name: "Access+", price: 15000, headline: "Le meilleur d'Access+", channels: "Plus de 280 chaînes TV et radio", image: "/access+.png" },
+  { name: "Évasion", price: 10500, headline: "Le meilleur d'Évasion", channels: "Plus de 300 chaînes TV et radio", image: "/evasion.png" },
+  { name: "Access", price: 5000, headline: "Le meilleur d'Access", channels: "Plus de 260 chaînes TV et radio", image: "/access.png" },
+];
+
+const PageOffres = () => (
+  <div className="flex flex-col gap-5">
+    <div className="rounded-lg bg-[#050505] text-white border border-black px-6 py-5 shadow-sm">
+      <p className="text-white/55 text-xs uppercase tracking-widest mb-1">Canal+ Cameroun</p>
+      <h1 className="text-2xl font-black italic tracking-wide">Catalogue des offres</h1>
+      <p className="text-sm text-white/70 mt-2 max-w-2xl">Les visuels des formules sont intégrés pour présenter clairement les chaînes et avantages à vos clients.</p>
+    </div>
+
+    <div className="grid grid-cols-1 lg:grid-cols-2 gap-5">
+      {offerCards.map((offer) => (
+        <article key={offer.name} className={`rounded-lg overflow-hidden bg-[#111] text-white border shadow-sm ${offer.featured ? "border-red-500/70" : "border-white/10"}`}>
+          <div className="p-5 flex flex-col sm:flex-row sm:items-start sm:justify-between gap-4 border-b border-white/10">
+            <div>
+              <p className="text-[11px] uppercase tracking-widest text-white/55">{offer.headline}</p>
+              <h2 className="mt-1 text-3xl font-black italic tracking-wide">{offer.name.toUpperCase()}</h2>
+              <p className="mt-2 text-sm font-semibold text-white/82">{offer.channels}</p>
+            </div>
+            <div className="sm:text-right flex-shrink-0">
+              <p className="text-4xl font-black tracking-wide">{offer.price.toLocaleString("fr-FR")}</p>
+              <p className="text-xs font-bold text-white/70 uppercase">FCFA / mois</p>
+            </div>
+          </div>
+          <div className="w-full">
+            <img
+              src={offer.image}
+              alt={`Formule ${offer.name}`}
+              className="w-full h-auto block"
+              loading="lazy"
+            />
+          </div>
+        </article>
+      ))}
+    </div>
+  </div>
+);
+
+const PagePortefeuille = ({ wallet, setWallet, commissionBalance, setCommissionBalance, totalRecharges, totalCommissionsGagnees, operationsWallet, boutonBalanceActif, refreshWalletData }) => {
   const [showRecharger, setShowRecharger]         = useState(false);
   const [showConfirmBalance, setShowConfirmBalance] = useState(false);
   const [isBalancing, setIsBalancing]             = useState(false);
@@ -484,6 +547,7 @@ const PagePortefeuille = ({ wallet, setWallet, commissionBalance, setCommissionB
       setCommissionBalance(data.commission_balance ?? 0);
       setBalanceMessage(data.message||`${fmt(commissionBalance)} FCFA transférés dans votre portefeuille !`);
       setBalanceSuccess(true);
+      await refreshWalletData?.();
     } catch(err){setBalanceMessage(err.message||"Impossible de transférer.");setBalanceSuccess(false);}
     finally{setIsBalancing(false);setShowConfirmBalance(false);}
   };
@@ -497,39 +561,50 @@ const PagePortefeuille = ({ wallet, setWallet, commissionBalance, setCommissionB
         <h1 className="text-primary-foreground text-xl font-semibold">Portefeuille</h1>
       </div>
 
-      {/* ✅ 1. Solde disponible dans mon portefeuille */}
-      <div className="bg-card rounded-xl border border-border shadow-sm p-6">
-        <p className="text-xs font-bold text-muted-foreground uppercase tracking-widest mb-2">Solde disponible dans mon portefeuille</p>
-        <p className="text-4xl font-bold text-foreground">{fmt(wallet)} <span className="text-base font-normal text-muted-foreground">FCFA</span></p>
+      <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+        <div className="rounded-xl border border-slate-800 bg-slate-900 text-white shadow-sm p-5">
+          <p className="text-xs font-bold text-white/65 uppercase tracking-widest mb-2">Total recharges reçues</p>
+          <p className="text-3xl font-bold">{fmt(totalRecharges)} <span className="text-sm font-normal text-white/65">FCFA</span></p>
+          <p className="text-xs text-white/65 mt-1">Recharges validées + créditations admin</p>
+        </div>
+        <div className="rounded-xl border border-slate-800 bg-slate-900 text-white shadow-sm p-5">
+          <p className="text-xs font-bold text-white/65 uppercase tracking-widest mb-2">Commissions gagnées au total</p>
+          <p className="text-3xl font-bold">{fmt(totalCommissionsGagnees)} <span className="text-sm font-normal text-white/65">FCFA</span></p>
+          <p className="text-xs text-white/65 mt-1">Historique complet des gains</p>
+        </div>
       </div>
 
-      {/* ✅ 2. Commissions cumulées */}
-      <div className="bg-card rounded-xl border border-border shadow-sm p-6">
-        <p className="text-xs font-bold text-muted-foreground uppercase tracking-widest mb-2">Commissions cumulées</p>
-        <p className="text-4xl font-bold text-foreground">{fmt(commissionBalance)} <span className="text-base font-normal text-muted-foreground">FCFA</span></p>
+      <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+        <div className="bg-card rounded-xl border border-border shadow-sm p-6">
+          <p className="text-xs font-bold text-muted-foreground uppercase tracking-widest mb-2">Solde disponible dans mon portefeuille</p>
+          <p className="text-4xl font-bold text-foreground">{fmt(wallet)} <span className="text-base font-normal text-muted-foreground">FCFA</span></p>
+        </div>
+        <div className="bg-card rounded-xl border border-border shadow-sm p-6">
+          <p className="text-xs font-bold text-muted-foreground uppercase tracking-widest mb-2">Commissions cumulées</p>
+          <p className="text-4xl font-bold text-foreground">{fmt(commissionBalance)} <span className="text-base font-normal text-muted-foreground">FCFA</span></p>
+        </div>
       </div>
-
-      {/* ✅ 3. Deux boutons sur la même ligne */}
+      {/*  3. Deux boutons sur la même ligne */}
       <div className="grid grid-cols-2 gap-3">
-        {/* Bouton gauche : Balance commissions */}
-        <button onClick={handleClickBalance} disabled={isBalancing}
-                className={`rounded-xl py-4 px-3 text-sm font-semibold transition-all active:scale-95 disabled:opacity-60 flex flex-col items-center gap-1.5 ${
-                  boutonBalanceActif ? "bg-slate-700 hover:bg-slate-600 text-white" : "bg-muted text-muted-foreground cursor-not-allowed"
-                }`}>
-          <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M12 2a10 10 0 1 0 0 20A10 10 0 0 0 12 2z"/><path d="M12 8v4l3 3"/></svg>
-          <span className="text-[11px] text-center leading-tight">{isBalancing?"Transfert…":boutonBalanceActif?"Virer commissions":"Non disponible"}</span>
-        </button>
-        {/* Bouton droit : Recharger portefeuille */}
+        {/* Bouton gauche : Recharger portefeuille */}
         <button onClick={()=>setShowRecharger(true)}
                 className="bg-primary hover:bg-primary/90 text-primary-foreground rounded-xl py-4 px-3 text-sm font-semibold transition-all active:scale-95 flex flex-col items-center gap-1.5">
           <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M12 19V5M5 12l7-7 7 7"/></svg>
           <span className="text-[11px] text-center leading-tight">Recharger portefeuille</span>
         </button>
+        {/* Bouton droit : Balance commissions */}
+        <button onClick={handleClickBalance} disabled={isBalancing}
+                className={`rounded-xl py-4 px-3 text-sm font-semibold transition-all active:scale-95 disabled:opacity-60 flex flex-col items-center gap-1.5 ${
+                  boutonBalanceActif ? "bg-slate-700 hover:bg-slate-600 text-white" : "bg-muted text-muted-foreground cursor-not-allowed"
+                }`}>
+          <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M12 2a10 10 0 1 0 0 20A10 10 0 0 0 12 2z"/><path d="M12 8v4l3 3"/></svg>
+          <span className="text-[11px] text-center leading-tight">{isBalancing ? "Transfert..." : boutonBalanceActif ? "Virer commissions" : "Non disponible"}</span>
+        </button>
       </div>
 
       {balanceMessage && (
         <div className={`px-4 py-3 rounded-lg text-sm font-medium border ${balanceSuccess?"bg-green-50 border-green-200 text-green-700":"bg-destructive/10 border-destructive/20 text-destructive"}`}>
-          {balanceSuccess?"✅ ":"⚠️ "}{balanceMessage}
+          {balanceMessage}
         </div>
       )}
 
@@ -543,7 +618,13 @@ const PagePortefeuille = ({ wallet, setWallet, commissionBalance, setCommissionB
         ) : opsPage.map((op,i)=>(
           <div key={op.id??i} className={`flex items-center justify-between px-5 py-4 ${i!==0?"border-t border-border":""}`}>
             <div>
-              <p className="text-sm font-medium text-foreground">💳 Recharge{op.moyen_paiement?` — ${op.moyen_paiement}`:""}</p>
+              <p className="text-sm font-medium text-foreground">
+                {op.type === "admin_credit"
+                  ? "Crédit admin"
+                  : op.type === "commission_transfer"
+                    ? "Transfert commissions"
+                    : `Recharge${op.moyen_paiement ? ` · ${op.moyen_paiement}` : ""}`}
+              </p>
               <p className="text-xs text-muted-foreground mt-0.5">{fmtDate(op.date_operation||op.created_at)}</p>
             </div>
             <div className="text-right">
@@ -557,14 +638,17 @@ const PagePortefeuille = ({ wallet, setWallet, commissionBalance, setCommissionB
         <PaginationBar/>
       </div>
 
-      {showRecharger && <ModalRecharger onClose={()=>setShowRecharger(false)}/>}
+      {showRecharger && <ModalRecharger onClose={()=>setShowRecharger(false)} onSuccess={refreshWalletData}/>}
       {showConfirmBalance && <ModalConfirmBalance commissionBalance={commissionBalance} onClose={()=>setShowConfirmBalance(false)} onConfirm={handleConfirmBalance} loading={isBalancing}/>}
     </div>
   );
 };
 
-// ── PAGE DÉCODEURS ─────────────────────────────────────────────────────────────
-const PageDecodeurs = ({ decodeurs, loadingDecoders }) => (
+//  PAGE D0CODEURS 
+const PageDecodeurs = ({ decodeurs, loadingDecoders }) => {
+  const { paginated:paginatedDecodeurs, PaginationBar } = usePagination(decodeurs, 10);
+
+  return (
   <div className="flex flex-col gap-5">
     <div className="bg-primary rounded-lg px-6 py-5">
       <p className="text-primary-foreground/70 text-xs uppercase tracking-widest mb-1">Mes équipements</p>
@@ -579,9 +663,9 @@ const PageDecodeurs = ({ decodeurs, loadingDecoders }) => (
       <table className="w-full text-sm">
         <thead><tr className="bg-muted/30 border-b border-border">{["Numéro","Statut"].map(h=><th key={h} className="px-5 py-3 text-left text-[11px] font-semibold text-muted-foreground uppercase">{h}</th>)}</tr></thead>
         <tbody>
-          {loadingDecoders ? <tr><td colSpan={2} className="text-center py-10 text-muted-foreground">Chargement…</td></tr>
+          {loadingDecoders ? <tr><td colSpan={2} className="text-center py-10 text-muted-foreground">Chargement...</td></tr>
            : decodeurs.length===0 ? <tr><td colSpan={2} className="text-center py-10 text-muted-foreground">Aucun décodeur attribué</td></tr>
-           : decodeurs.map(d=>(
+           : paginatedDecodeurs.map(d=>(
             <tr key={d.id} className="border-t border-border hover:bg-muted/30">
               <td className="px-5 py-3 font-semibold text-foreground font-mono">{d.numero}</td>
               <td className="px-5 py-3"><span className={`px-2 py-1 text-xs rounded font-semibold ${d.status==="free"?"bg-green-100 text-green-700":"bg-red-100 text-red-700"}`}>{d.status==="free"?"Disponible":"Utilisé"}</span></td>
@@ -589,12 +673,14 @@ const PageDecodeurs = ({ decodeurs, loadingDecoders }) => (
           ))}
         </tbody>
       </table>
+      <PaginationBar/>
     </div>
   </div>
-);
+  );
+};
 
-// ── PAGE PARAMÈTRES ────────────────────────────────────────────────────────────
-// ✅ Photo de profil ajoutée
+//  PAGE PARAMTRES 
+//  Photo de profil ajoutée
 const PageParametres = ({ onLogout, userData, onSaveProfile, onChangePassword, onAvatarUpload }) => {
   const [activeSection, setActiveSection] = useState(null);
   const [profile, setProfile]   = useState({ name:userData?.name||"", prenom:userData?.prenom||"", email:userData?.email||"", telephone:userData?.telephone||"" });
@@ -608,7 +694,7 @@ const PageParametres = ({ onLogout, userData, onSaveProfile, onChangePassword, o
 
   const saveProfile = async () => {
     setSavingProfile(true); setMsgProfile("");
-    try { await onSaveProfile(profile); setMsgProfile("Profil mis à jour avec succès ✅"); }
+    try { await onSaveProfile(profile); setMsgProfile("Profil mis à jour avec succès"); }
     catch(e){ setMsgProfile("Erreur : "+e.message); }
     finally{ setSavingProfile(false); }
   };
@@ -617,7 +703,7 @@ const PageParametres = ({ onLogout, userData, onSaveProfile, onChangePassword, o
     if(passwords.nouveau!==passwords.confirm){setMsgPwd("Les mots de passe ne correspondent pas.");return;}
     if(passwords.nouveau.length<6){setMsgPwd("Mot de passe trop court (min 6 caractères).");return;}
     setSavingPwd(true); setMsgPwd("");
-    try{ await onChangePassword(passwords.current,passwords.nouveau); setMsgPwd("Mot de passe changé ✅"); setPasswords({current:"",nouveau:"",confirm:""}); }
+    try{ await onChangePassword(passwords.current,passwords.nouveau); setMsgPwd("Mot de passe changé"); setPasswords({current:"",nouveau:"",confirm:""}); }
     catch(e){ setMsgPwd("Erreur : "+e.message); }
     finally{ setSavingPwd(false); }
   };
@@ -631,7 +717,7 @@ const PageParametres = ({ onLogout, userData, onSaveProfile, onChangePassword, o
       const data = await res.json();
       if(!res.ok) throw new Error(data.error||"Erreur upload");
       onAvatarUpload(data.photo_url);
-    } catch(err){ alert("Erreur upload : "+err.message); }
+    } catch(err){ Swal.fire({ title: "Erreur", text: "Erreur upload : "+err.message, icon: "error", confirmButtonColor: "#e53935" }); }
     finally{ setUploadingAvatar(false); }
   };
 
@@ -652,7 +738,7 @@ const PageParametres = ({ onLogout, userData, onSaveProfile, onChangePassword, o
         <h1 className="text-primary-foreground text-xl font-semibold">Paramètres</h1>
       </div>
 
-      {/* ✅ Photo de profil */}
+      {/*  Photo de profil */}
       <div className="bg-card rounded-xl border border-border p-5 flex items-center gap-4">
         <div className="relative">
           <Avatar photoUrl={userData?.photo_url} name={userData?.name} size={64}/>
@@ -687,9 +773,9 @@ const PageParametres = ({ onLogout, userData, onSaveProfile, onChangePassword, o
                     <Field label="Prénom"><input type="text" value={profile.prenom} onChange={e=>setProfile(p=>({...p,prenom:e.target.value}))} className={inputCls()}/></Field>
                     <Field label="Email"><input type="email" value={profile.email} onChange={e=>setProfile(p=>({...p,email:e.target.value}))} className={inputCls()}/></Field>
                     <Field label="Téléphone"><input type="tel" value={profile.telephone} onChange={e=>setProfile(p=>({...p,telephone:e.target.value}))} className={inputCls()}/></Field>
-                    {msgProfile && <p className={`text-xs ${msgProfile.includes("✅")?"text-green-600":"text-destructive"}`}>{msgProfile}</p>}
+                    {msgProfile && <p className={`text-xs ${msgProfile.includes("succ?s")?"text-green-600":"text-destructive"}`}>{msgProfile}</p>}
                     <button onClick={saveProfile} disabled={savingProfile} className="w-full bg-primary text-primary-foreground py-3 rounded-lg text-sm font-semibold hover:bg-primary/90 disabled:opacity-60 flex items-center justify-center gap-2">
-                      {savingProfile?<Spinner/>:null}{savingProfile?"Sauvegarde…":"Sauvegarder"}
+                      {savingProfile ? <Spinner /> : null}{savingProfile ? "Sauvegarde..." : "Sauvegarder"}
                     </button>
                   </div>
                 )}
@@ -698,22 +784,22 @@ const PageParametres = ({ onLogout, userData, onSaveProfile, onChangePassword, o
                     <Field label="Mot de passe actuel"><input type="password" value={passwords.current} onChange={e=>setPasswords(p=>({...p,current:e.target.value}))} className={inputCls()}/></Field>
                     <Field label="Nouveau mot de passe"><input type="password" value={passwords.nouveau} onChange={e=>setPasswords(p=>({...p,nouveau:e.target.value}))} className={inputCls()}/></Field>
                     <Field label="Confirmer le nouveau mot de passe"><input type="password" value={passwords.confirm} onChange={e=>setPasswords(p=>({...p,confirm:e.target.value}))} className={inputCls()}/></Field>
-                    {msgPwd && <p className={`text-xs ${msgPwd.includes("✅")?"text-green-600":"text-destructive"}`}>{msgPwd}</p>}
+                    {msgPwd && <p className={`text-xs ${msgPwd.includes("chang?")?"text-green-600":"text-destructive"}`}>{msgPwd}</p>}
                     <button onClick={savePwd} disabled={savingPwd} className="w-full bg-primary text-primary-foreground py-3 rounded-lg text-sm font-semibold hover:bg-primary/90 disabled:opacity-60 flex items-center justify-center gap-2">
-                      {savingPwd?<Spinner/>:null}{savingPwd?"Changement…":"Changer le mot de passe"}
+                      {savingPwd ? <Spinner /> : null}{savingPwd ? "Changement..." : "Changer le mot de passe"}
                     </button>
                   </div>
                 )}
                 {item.id==="sociaux" && (
                   <div className="flex flex-col gap-3 pt-4">
-                    <a href="https://wa.me/237656253864" target="_blank" rel="noreferrer" className="w-full px-4 py-3 rounded-lg bg-green-600 text-white text-sm font-semibold hover:bg-green-700 flex items-center justify-center gap-2">WhatsApp</a>
+                    <a href="https://wa.me/237695225823" target="_blank" rel="noreferrer" className="w-full px-4 py-3 rounded-lg bg-green-600 text-white text-sm font-semibold hover:bg-green-700 flex items-center justify-center gap-2">WhatsApp</a>
                     <a href="https://facebook.com/visioncanalplus" target="_blank" rel="noreferrer" className="w-full px-4 py-3 rounded-lg bg-blue-600 text-white text-sm font-semibold hover:bg-blue-700 flex items-center justify-center gap-2">Facebook</a>
                     <a href="https://instagram.com/visioncanalplus" target="_blank" rel="noreferrer" className="w-full px-4 py-3 rounded-lg bg-gradient-to-r from-pink-600 to-red-600 text-white text-sm font-semibold flex items-center justify-center gap-2">Instagram</a>
                   </div>
                 )}
                 {item.id==="notifs" && <p className="pt-4 text-sm text-muted-foreground">Les notifications sont gérées en temps réel via l'icône cloche en haut de l'écran.</p>}
                 {item.id==="langue" && <p className="pt-4 text-sm text-muted-foreground">Langue actuelle : <strong>Français</strong>. D'autres langues seront disponibles prochainement.</p>}
-                {item.id==="cgu" && <p className="pt-4 text-sm text-muted-foreground leading-relaxed"><strong>Vision Canal+</strong> — En utilisant cette application, vous acceptez nos conditions générales. Contact : +237 656 253 864.</p>}
+                {item.id==="cgu" && <p className="pt-4 text-sm text-muted-foreground leading-relaxed"><strong>Vision Canal+</strong>  En utilisant cette application, vous acceptez nos conditions générales. Contact : +237 656 253 864.</p>}
               </div>
             )}
           </div>
@@ -723,24 +809,27 @@ const PageParametres = ({ onLogout, userData, onSaveProfile, onChangePassword, o
   );
 };
 
-// ══════════════════════════════════════════════════════════════════════════════
+// """"""""""""""""""""""""""""""""""""""""""""""""""""""""""""""""""""""""""""""
 // MAIN COMPONENT
-// ══════════════════════════════════════════════════════════════════════════════
+// """"""""""""""""""""""""""""""""""""""""""""""""""""""""""""""""""""""""""""""
 export default function PartnerDashboard() {
-  const [activeNav, setActiveNav]               = useState("accueil");
+  const [searchParams, setSearchParams] = useSearchParams();
+  const [activeNav, setActiveNav]               = useState(searchParams.get("page") || "accueil");
   const [showExtraNav, setShowExtraNav]         = useState(false);
-  // ✅ Sidebar mobile : cachée par défaut, apparaît seulement sur clic bouton menu
+  //  Sidebar mobile : cachée par défaut, apparaît seulement sur clic bouton menu
   const [mobileSidebarOpen, setMobileSidebarOpen] = useState(false);
   const [message, setMessage]                   = useState("Tableau de bord partenaire");
   const [wallet, setWallet]                     = useState(0);
   const [commissionBalance, setCommissionBalance] = useState(0);
+  const [totalRecharges, setTotalRecharges]     = useState(0);
+  const [totalCommissionsGagnees, setTotalCommissionsGagnees] = useState(0);
   const [commissionsParFormule, setCommissions] = useState([]);
   const [commissionRules, setCommissionRules]   = useState([]);
   const [operationsWallet, setOperationsWallet] = useState([]);
   const [boutonBalanceActif, setBoutonBalanceActif] = useState(false);
   const [stats, setStats]                       = useState({ clients:0, reabonnements:0, revenus:0 });
   const [transactions, setTransactions]         = useState([]);
-  const [adminWhatsapp, setAdminWhatsapp]       = useState("237656253864");
+  const [adminWhatsapp, setAdminWhatsapp]       = useState("237695225823");
   const [decodeurs, setDecodeurs]               = useState([]);
   const [loadingDecoders, setLoadingDecoders]   = useState(false);
   const [notifications, setNotifications]       = useState([]);
@@ -748,9 +837,28 @@ export default function PartnerDashboard() {
   const [userData, setUserData]                 = useState(null);
 
   const navigate = useNavigate();
+  const goNav = useCallback((page) => {
+    setActiveNav(page);
+    setSearchParams(page === "accueil" ? {} : { page });
+  }, [setSearchParams]);
 
-  const handleLogout = useCallback(() => {
-    if(!window.confirm("Voulez-vous vraiment vous déconnecter ?")) return;
+  useEffect(() => {
+    const page = searchParams.get("page") || "accueil";
+    if (page !== activeNav) setActiveNav(page);
+  }, [searchParams]);
+
+  const handleLogout = useCallback(async () => {
+    const confirmResult = await Swal.fire({
+      title: "Déconnexion",
+      text: "Voulez-vous vraiment vous déconnecter ?",
+      icon: "question",
+      showCancelButton: true,
+      confirmButtonColor: "#e53935",
+      cancelButtonColor: "#d33",
+      confirmButtonText: "Oui, déconnexion",
+      cancelButtonText: "Annuler"
+    });
+    if(!confirmResult.isConfirmed) return;
     clearSession(); navigate("/LoginForm");
   }, [navigate]);
 
@@ -766,15 +874,17 @@ export default function PartnerDashboard() {
         fetch(`${API}/partner/commission-rules`,{headers:{Authorization:`Bearer ${getToken()}`}}),
         fetch(`${API}/partner/dashboard`,       {headers:{Authorization:`Bearer ${getToken()}`}}),
       ]);
-      if(rulesRes.ok) setCommissionRules(await rulesRes.json());
+      if(rulesRes.ok) setCommissionRules(activeFormules(await rulesRes.json()));
       if(!dashRes.ok){ if(dashRes.status===401){clearSession();navigate("/LoginForm");} return; }
       const data = await dashRes.json();
       setMessage(data.message||"Tableau de bord partenaire");
       setWallet(data.wallet_balance||0);
       setCommissionBalance(data.commission_balance||0);
+      setTotalRecharges(data.total_recharges||0);
+      setTotalCommissionsGagnees(data.total_commissions_gagnees||data.commission_total||0);
       setBoutonBalanceActif(data.bouton_balance_actif||false);
       setStats(data.stats||{clients:0,reabonnements:0,revenus:0});
-      setCommissions(data.commissions_par_formule||[]);
+      setCommissions(activeFormules(data.commissions_par_formule || []));
       setTransactions(data.transactions||[]);
       if(data.admin_whatsapp) setAdminWhatsapp(data.admin_whatsapp);
       if(data.user) setUserData(data.user);
@@ -794,6 +904,10 @@ export default function PartnerDashboard() {
     );
   } catch (e) { console.error(e); }
 }, []);
+
+  const refreshWalletData = useCallback(async () => {
+    await Promise.all([fetchDashboard(), fetchOperationsWallet()]);
+  }, [fetchDashboard, fetchOperationsWallet]);
 
   const fetchNotifications = useCallback(async () => {
     try {
@@ -829,21 +943,30 @@ export default function PartnerDashboard() {
 
   // Socket.IO
   useEffect(() => {
-    const socket = io(SOCKET_URL,{transports:["websocket","polling"]});
+    const socket = createAppSocket();
     socket.on("balance_toggle_update", fetchDashboard);
     const uid = getUserId();
     if(uid){
       socket.on(`partner_balance_update_${uid}`, fetchDashboard);
-      socket.on(`partner_notification_${uid}`,   ()=>fetchNotifications());
-      socket.on(`partner_dashboard_update_${uid}`, fetchDashboard);
+      socket.on(`partner_notification_${uid}`,   (data)=>{
+        fetchNotifications();
+        notifyUser({ title: "Vision Canal+", body: data?.message || "Nouvelle notification partenaire" });
+      });
+      socket.on(`partner_dashboard_update_${uid}`, (data)=>{
+        refreshWalletData();
+        if(data?.type==="nouveau_decodeur" || data?.type==="decodeur_update") fetchDecodeurs();
+      });
     }
-    socket.on("partner_dashboard_update", fetchDashboard);
+    socket.on("partner_dashboard_update", (data)=>{
+      refreshWalletData();
+      if(data?.type==="nouveau_decodeur" || data?.type==="decodeur_update") fetchDecodeurs();
+    });
     socket.on("commission_rules_update",  ()=>{
       fetch(`${API}/partner/commission-rules`,{headers:{Authorization:`Bearer ${getToken()}`}})
-        .then(r=>r.ok?r.json():[]).then(rules=>setCommissionRules(rules)).catch(()=>{});
+        .then(r=>r.ok?r.json():[]).then(rules=>setCommissionRules(activeFormules(rules))).catch(()=>{});
     });
     return ()=>socket.disconnect();
-  }, [fetchDashboard, fetchNotifications]);
+  }, [fetchDashboard, fetchNotifications, fetchDecodeurs, refreshWalletData]);
 
   useEffect(() => {
     const cleanupActivity = installActivityTracker(()=>{clearSession();navigate("/LoginForm");},"partner");
@@ -871,7 +994,8 @@ export default function PartnerDashboard() {
     switch(activeNav){
       case "transactions":  return <PageTransactions transactions={transactions}/>;
       case "statistiques":  return <PageStatistiques stats={stats} commissionsParFormule={commissionsParFormule}/>;
-      case "portefeuille":  return <PagePortefeuille wallet={wallet} setWallet={setWallet} commissionBalance={commissionBalance} setCommissionBalance={setCommissionBalance} operationsWallet={operationsWallet} boutonBalanceActif={boutonBalanceActif}/>;
+      case "portefeuille":  return <PagePortefeuille wallet={wallet} setWallet={setWallet} commissionBalance={commissionBalance} setCommissionBalance={setCommissionBalance} totalRecharges={totalRecharges} totalCommissionsGagnees={totalCommissionsGagnees} operationsWallet={operationsWallet} boutonBalanceActif={boutonBalanceActif} refreshWalletData={refreshWalletData}/>;
+      case "offres":        return <PageOffres/>;
       case "parametres":    return <PageParametres onLogout={handleLogout} userData={userData} onSaveProfile={handleSaveProfile} onChangePassword={handleChangePassword} onAvatarUpload={handleAvatarUpload}/>;
       case "decodeurs":     return <PageDecodeurs decodeurs={decodeurs} loadingDecoders={loadingDecoders}/>;
       default:              return <PageAccueil message={message} wallet={wallet} commissionBalance={commissionBalance} commissionsParFormule={commissionsParFormule} commissionRules={commissionRules} navigate={navigate} adminWhatsapp={adminWhatsapp} userData={userData}/>;
@@ -880,25 +1004,25 @@ export default function PartnerDashboard() {
 
   const unreadCount = useMemo(()=>notifications.filter(n=>!n.is_read).length,[notifications]);
 
-  // ✅ Sidebar contenu réutilisé desktop + mobile
+  //  Sidebar contenu réutilisé desktop + mobile
   const SidebarContent = () => (
     <>
-      {/* ✅ Logo de l'application dans la sidebar (pas VC) */}
+      {/*  Logo de l'application dans la sidebar (pas VC) */}
       <div className="flex flex-col items-center py-8 px-4 border-b border-border">
-        <button onClick={()=>{setActiveNav("accueil");setMobileSidebarOpen(false);}} className="hover:opacity-80 transition-opacity">
+        <button onClick={()=>{goNav("accueil");setMobileSidebarOpen(false);}} className="hover:opacity-80 transition-opacity">
           <img src={logo} alt="Vision Canal+" className="h-16 w-auto rounded-xl object-contain"/>
         </button>
         <p className="mt-3 font-semibold text-foreground text-sm">Partenaire</p>
 
-        
+
       </div>
       <nav className="flex flex-col gap-1 p-3 flex-1 overflow-y-auto">
         {navItems.map(({id,label,Icon})=>{
           const isActive = activeNav===id;
           return (
-            <button key={id} onClick={()=>{setActiveNav(id);setMobileSidebarOpen(false);}}
+            <button key={id} onClick={()=>{goNav(id);setMobileSidebarOpen(false);}}
                     className={`flex items-center gap-3 px-4 py-3 rounded-lg text-sm font-medium transition-all ${isActive?"bg-primary/10 text-primary":"text-muted-foreground hover:bg-muted/30 hover:text-foreground"}`}>
-              <Icon active={isActive}/>{label}
+              {Icon({ active: isActive })}{label}
             </button>
           );
         })}
@@ -915,28 +1039,29 @@ export default function PartnerDashboard() {
   return (
     <div className="min-h-screen bg-background" style={{fontFamily:"'Poppins', sans-serif"}}>
 
-      {/* ══ HEADER ══ */}
+      {/* "" HEADER "" */}
       <header className="sticky top-0 z-20 bg-card border-b border-border shadow-sm">
         <div className="flex items-center justify-between px-4 py-3 lg:px-6">
           <div className="flex items-center gap-3">
-            {/* ✅ Bouton hamburger visible seulement en mobile */}
+            {/*  Bouton hamburger visible seulement en mobile */}
             <button className="lg:hidden w-10 h-10 flex items-center justify-center text-muted-foreground hover:bg-muted/50 rounded-lg transition-colors"
                     onClick={()=>setMobileSidebarOpen(o=>!o)}>
               <IconMenu/>
             </button>
-            <button onClick={()=>setActiveNav("accueil")} className="hover:opacity-80 transition-opacity">
-             {userData && (
-          <div className=" w-auto rounded-xl object-contain">
-            <Avatar photoUrl={userData.photo_url} name={userData.name} size={48}/>
-            <p className="text-xs text-muted-foreground font-medium">{userData.name}{userData.prenom} </p>
-          </div>
-        )}
+            <button onClick={()=>goNav("accueil")} className="hover:opacity-80 transition-opacity flex items-center gap-3">
+              {userData && <Avatar photoUrl={userData.photo_url} name={userData.name} size={42}/>}
+              <div className="lg:hidden leading-tight text-left">
+                <p className="text-[15px] font-extrabold tracking-tight text-foreground">Vision Canal<span className="text-primary">+</span></p>
+                {userData && <p className="text-[11px] text-muted-foreground font-medium truncate max-w-[150px]">{userData.prenom} {userData.name}</p>}
+              </div>
+              <div className="hidden lg:block w-auto rounded-xl object-contain">
+                {userData && <p className="text-xs text-muted-foreground font-medium">{userData.name}{userData.prenom}</p>}
+              </div>
             </button>
           </div>
-
           {/* Notifications */}
           <div className="relative">
-            <button onClick={()=>{setShowNotifPopup(!showNotifPopup);if(!showNotifPopup&&unreadCount>0)markNotifsRead();}}
+            <button onClick={()=>{requestNotificationPermission();setShowNotifPopup(!showNotifPopup);if(!showNotifPopup&&unreadCount>0)markNotifsRead();}}
                     className="relative w-10 h-10 flex items-center justify-center text-muted-foreground hover:bg-muted/50 rounded-full transition-colors">
               <IconBell/>
               {unreadCount>0 && (
@@ -976,7 +1101,7 @@ export default function PartnerDashboard() {
     Tout effacer
   </button>
   <button
-    onClick={()=>{ setActiveNav("accueil"); setShowNotifPopup(false); }}
+    onClick={()=>{ goNav("accueil"); setShowNotifPopup(false); }}
     className="text-[10px] font-bold text-primary hover:underline">
     Fermer
   </button>
@@ -989,13 +1114,13 @@ export default function PartnerDashboard() {
       </header>
 
       <div className="flex">
-        {/* ✅ SIDEBAR DESKTOP — toujours visible sur grand écran */}
+        {/*  SIDEBAR DESKTOP  toujours visible sur grand écran */}
         <aside className="hidden lg:flex flex-col w-60 bg-card border-r border-border shadow-sm"
                style={{height:"calc(100vh - 57px)",position:"sticky",top:"57px"}}>
           <SidebarContent/>
         </aside>
 
-        {/* ✅ SIDEBAR MOBILE — overlay, visible seulement sur clic hamburger */}
+        {/*  SIDEBAR MOBILE  overlay, visible seulement sur clic hamburger */}
         {mobileSidebarOpen && (
           <>
             <div className="fixed inset-0 z-40 bg-black/50" onClick={()=>setMobileSidebarOpen(false)}/>
@@ -1020,14 +1145,14 @@ export default function PartnerDashboard() {
         </main>
       </div>
 
-      {/* ✅ NAV MOBILE BAS — toujours visible en mobile */}
-      <nav className="lg:hidden fixed bottom-0 left-0 right-0 z-20 bg-card border-t border-border" style={{paddingBottom:"env(safe-area-inset-bottom, 8px)"}}>
+      {/*  NAV MOBILE BAS  toujours visible en mobile */}
+      <nav className="lg:hidden fixed bottom-0 left-0 right-0 z-20 bg-card border-t border-border shadow-[0_-8px_24px_rgba(15,23,42,0.08)]" style={{paddingBottom:"env(safe-area-inset-bottom, 8px)"}}>
         <div className="flex items-center justify-around pt-2 pb-1">
           {navMobileFixed.map(id=>{
             const item = navItems.find(n=>n.id===id); if(!item) return null;
             const {Icon,label} = item; const isActive = activeNav===id;
             return (
-              <button key={id} onClick={()=>{setActiveNav(id);setShowExtraNav(false);}} className="flex flex-col items-center gap-0.5 flex-1 py-1">
+              <button key={id} onClick={()=>{goNav(id);setShowExtraNav(false);}} className="flex flex-col items-center gap-0.5 flex-1 py-1">
                 <Icon active={isActive}/>
                 <span className={`text-[10px] font-medium ${isActive?"text-primary":"text-muted-foreground"}`}>{label}</span>
                 {isActive && <span className="block w-4 h-0.5 bg-primary rounded-full"/>}
@@ -1046,9 +1171,9 @@ export default function PartnerDashboard() {
                   const item = navItems.find(n=>n.id===id); if(!item) return null;
                   const {Icon,label} = item; const isActive = activeNav===id;
                   return (
-                    <button key={id} onClick={()=>{setActiveNav(id);setShowExtraNav(false);}}
+                    <button key={id} onClick={()=>{goNav(id);setShowExtraNav(false);}}
                             className={`flex items-center gap-3 w-full px-4 py-3 text-sm font-medium transition-colors ${isActive?"text-primary bg-primary/10":"text-foreground hover:bg-muted/30"}`}>
-                      <Icon active={isActive}/>{label}
+                      {Icon({ active: isActive })}{label}
                     </button>
                   );
                 })}
@@ -1057,6 +1182,8 @@ export default function PartnerDashboard() {
           </div>
         </div>
       </nav>
+
+      <AiAssistant />
     </div>
   );
 }
